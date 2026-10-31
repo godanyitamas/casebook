@@ -340,7 +340,6 @@ stage.addEventListener("keydown", (event) => {
   else handled = false;
   if (handled) event.preventDefault();
 });
-window.__hb = S;
 setEffort(0, false);
 focus(null);
 writePanel(true);
