@@ -103,7 +103,7 @@ function flangeAt(name, centre, axis, r, thick, owner, { tone = "mid", bias = 0.
   const bolts = facing ? Dots(G.dotsOf(F, G.dot3(axis, V) > 0 ? thick / 2 : -thick / 2, r * 0.72, 6, P, { all: true }), { size: 0.35, tone: "mid" }) : "";
   put(name, centre, S(G.disc(-thick / 2, thick / 2, r, F, P, { bevel: 0.2 }), { tone }) + bolts, [shape], { bias, route: owner });
 }
-function pipe(name, control, r, kind, { bend = 2.8, flanges = [true, true], flangeR = 1.5, rings, maxLength = 14, bias = 0, gaps: extra0 = [], breaks = [], caps, tone, touch, limp = false, flow = true, tees = [], flowVar } = {}) {
+function pipe(name, control, r, kind, { bend = 2.8, flanges = [true, true], flangeR = 1.5, rings, maxLength = 14, bias = 0, gaps: extra0 = [], breaks = [], caps, tone, touch, limp = false, flow = true, tees = [], flowVar, flowBase = 0 } = {}) {
   const line = G.fillet(control, Math.max(r * bend, 2.4), r > 2 ? 14 : 10, { P, tube: r });
   const total = G.pathLength(line);
   let extra = extra0;
@@ -140,7 +140,7 @@ function pipe(name, control, r, kind, { bend = 2.8, flanges = [true, true], flan
     return screenAt[i];
   };
   pieces.forEach((piece, index) => {
-    const flowPath = flow ? `<path class="fl" data-k="${kind}" d="${path3(G.cut(line, Math.max(0, piece.from), Math.min(total, piece.to)))}" style="--o:${f2(screenOf(Math.max(0, piece.from)))}${flowVar ? `;--p:var(--p-${flowVar},-200);opacity:var(--o-${flowVar},1)` : ""}"/>` : "";
+    const flowPath = flow ? `<path class="fl" data-k="${kind}" d="${path3(G.cut(line, Math.max(0, piece.from), Math.min(total, piece.to)))}" style="--o:${f2(flowBase + screenOf(Math.max(0, piece.from)))}${flowVar ? `;--p:var(--p-${flowVar},-200);opacity:var(--o-${flowVar},1)` : ""}"/>` : "";
     put(`${name}:${index}`, piece.mid, `<g class="vs" data-k="${kind}">${TB.tubeSvg(piece, { tone: tone ?? K.tone })}${flowPath}</g>`, [A.tube(piece.points, piece.radii)], { bias, route: name, chunk: index });
   });
   collars.forEach(({ centre, tangent }, index) => flangeAt(`${name}.fl${index}`, centre, tangent, r * flangeR, thick, name));
@@ -148,6 +148,29 @@ function pipe(name, control, r, kind, { bend = 2.8, flanges = [true, true], flan
   line.tees = teeAt;
   line.total = total;
   return line;
+}
+// a run of pipe that turns inside elbow balls at the given control points (rim on sphere at both sides)
+function elbowed(name, control, r, kind, elbows, opts = {}) {
+  const R0 = r * 1.45;
+  const cuts = [...elbows].sort((a, b) => a - b);
+  let from = 0;
+  let start = control[0];
+  let lines = [];
+  let base = opts.flowBase ?? 0;
+  const advance = () => { base += ROUTES[ROUTES.length - 1].screen + 2 * R0 * KS; };
+  cuts.forEach((at, j) => {
+    const corner = control[at];
+    const inDir = G.unit3(G.sub3(corner, control[at - 1]));
+    const outDir = G.unit3(G.sub3(control[at + 1], corner));
+    const pts = [start, ...control.slice(from + 1, at), G.sub3(corner, G.mul3(inDir, rimOn(R0, r)))];
+    lines.push(pipe(`${name}${j ? "." + j : ""}`, pts, r, kind, { ...opts, tees: j === 0 ? opts.tees ?? [] : [], flowBase: base, flanges: [j === 0 ? (opts.flanges ?? [true, true])[0] : false, false], caps: [j === 0 ? (opts.caps ?? [true, true])[0] : false, false] }));
+    advance();
+    ball(`${name}.elbow${j}`, corner, R0, { tone: "mid" });
+    start = G.add3(corner, G.mul3(outDir, rimOn(R0, r)));
+    from = at;
+  });
+  lines.push(pipe(`${name}.${cuts.length}`, [start, ...control.slice(from + 1)], r, kind, { ...opts, tees: [], flowBase: base, flanges: [false, (opts.flanges ?? [true, true])[1]], caps: [false, (opts.caps ?? [true, true])[1]] }));
+  return lines;
 }
 function tee(name, c, r) {
   return ball(name, c, r, { tone: "mid" });
@@ -221,7 +244,7 @@ const GAUGE = { c: [54, 42], r: 16, z: 0, h: 9 };
   slab("post.foot", k.insetPlan(POST, -3), 0, 3, { tone: "lo" }, { steps: 3, bevel: 0.4 });
   const tickD = [];
   const majorD = [];
-  for (let z = 20; z < POST_TOP; z += 20) (z % 100 === 0 ? majorD : tickD).push(k.segment([POST.x + POST.w, f, z], [POST.x + POST.w - (z % 100 === 0 ? 5 : 2.6), f, z], P));
+  for (let z = 20; z < POST_TOP; z += 20) (z % 100 === 0 ? majorD : tickD).push(k.segment([POST.x, f, z], [POST.x + (z % 100 === 0 ? 3.4 : 2.4), f, z], P));
   slab("post", POST, 3, POST_TOP - 3, { tone: "mid" }, { steps: 2, bevel: 0.3, extra: Ln(tickD.join(""), { tone: "lo" }) + Ln(majorD.join(""), { tone: "mid" }) });
   slab("post.cap", k.insetPlan(POST, -1), POST_TOP, 2, { tone: "mid" }, { steps: 2, bevel: 0.3 });
 }
@@ -281,7 +304,7 @@ const ribsBetween = (lo, hi) => {
     const zb = 230 + j * 7.6;
     for (const dz of [0, 2]) {
       let pts = [];
-      const flush = () => { if (pts.length > 1) out.push(path3(pts)); pts = []; };
+      const flush = () => { if (pts.length > 1) out.push(pts); pts = []; };
       for (let i = 0; i <= 120; i++) {
         const td = lo + ((hi - lo) * i) / 120;
         const t = (td * Math.PI) / 180;
@@ -293,12 +316,13 @@ const ribsBetween = (lo, hi) => {
       flush();
     }
   }
-  return out.join("");
+  return out;
 };
+const ribSvg = (lists, cutAtStart) => lists.map((pts) => (cutAtStart ? k.fadeLineSvg(pts.map(at), { fade: [10, 0], tone: "lo" }) : Ln(path3(pts), { tone: "lo" }))).join("");
 for (const [name, lo, hi, ref] of [["wall.left", OPEN[1] - 360, -140, [-36, -8, 240]], ["wall.back", -140, -40, [0, -26, 240]], ["wall.right", -40, OPEN[0], [36, -8, 240]]]) {
   const outerArc = ellipse(ELL.a, ELL.b, hi, lo, 30);
   const innerArc = ellipse(ELL.a - 4, ELL.b - 4, lo, hi, 30);
-  extr(name, [...outerArc, ...innerArc], FLOOR_Z, TOP_Z - FLOOR_Z, { tone: "mid" }, { convex: false, ref, inner: Ln(k.ringSeam(outerArc, 230, P), { tone: "faint" }), extra: Ln(ribsBetween(lo, hi), { tone: "lo" }) });
+  extr(name, [...outerArc, ...innerArc], FLOOR_Z, TOP_Z - FLOOR_Z, { tone: "mid" }, { convex: false, ref, inner: Ln(k.ringSeam(outerArc, 230, P), { tone: "faint" }), extra: ribSvg(ribsBetween(lo, hi), name === "wall.left") });
 }
 // rim band on top of the wall and bolt dots
 const rimLine = (a, b) => path3(ellipse(a, b, OPEN[0], OPEN[1] - 360, 60).map(([x, y]) => [x, y, TOP_Z]));
@@ -464,7 +488,7 @@ pipe("trachea", [[TEE_AIR[0], TEE_AIR[1], HEAD_Z], [TEE_AIR[0], TEE_AIR[1], TEE_
 tee("trachea.tee", TEE_AIR, 3.6);
 for (const side of [-1, 1]) {
   const x = side * LUNG_X;
-  pipe(`bronchus${side}`, [[TEE_AIR[0] + side * rimOn(3.6, 1.9), TEE_AIR[1], TEE_AIR[2]], [side * 11, TEE_AIR[1], TEE_AIR[2]], [x, LUNG_Y + 3, TEE_AIR[2] - 0.5], [x, LUNG_Y + 3, MANIFOLD_Z + 4]], 1.9, "air", { flanges: [false, true], rings: { pitch: 2, fade: [0.1, 0.55] }, bend: 2.6 });
+  elbowed(`bronchus${side}`, [[TEE_AIR[0] + side * rimOn(3.6, 1.9), TEE_AIR[1], TEE_AIR[2]], [side * 11, TEE_AIR[1], TEE_AIR[2]], [x, LUNG_Y + 3, TEE_AIR[2] - 0.5], [x, LUNG_Y + 3, MANIFOLD_Z + 4]], 1.9, "air", [2], { flanges: [false, true], rings: { pitch: 2, fade: [0.1, 0.55] }, bend: 2.6 });
 }
 
 // ---------------------------------------------------------------- heart: a valve deck with four ports and a ventricle pump hung under it
@@ -493,7 +517,7 @@ const BOTTOM_TEE = [AORTA[0], AORTA[1], 196];
 const ARCH_Z = 295.5;
 const aorta = pipe("aorta", [[-4, 10, DECK_TOP], [-4, 10, 289], [-4.6, 3, ARCH_Z], [AORTA[0], AORTA[1], ARCH_Z], [AORTA[0], AORTA[1], 204], [BOTTOM_TEE[0], BOTTOM_TEE[1], BOTTOM_TEE[2] + rimOn(4, 2.8)]], 2.8, "art", {
   bend: 3.2, maxLength: 12, flanges: [true, false], caps: [true, false], flangeR: 1.3,
-  tees: [{ name: "aorta.arch", near: [-4.8, -1.7, ARCH_Z], r: 3.4 }, { name: "aorta.renal", near: [AORTA[0], AORTA[1], 212], r: 3.8 }],
+  tees: [{ name: "aorta.arch", near: [-4.8, -1.7, ARCH_Z], r: 3.4 }, { name: "aorta.renal", near: [AORTA[0], AORTA[1], 212.2], r: 3.8 }],
 });
 tee("aorta.split", BOTTOM_TEE, 4);
 const ARCH = aorta.tees["aorta.arch"];
@@ -504,16 +528,17 @@ pipe("carotid", [fromBall(ARCH, 3.4, 1.6, [0, 0, 1]), [ARCH[0], ARCH[1], HEAD_Z]
 for (const side of [-1, 1]) {
   const dir = side < 0 ? [-1, 0, 0] : [0, 0, -1];
   const start = fromBall(BOTTOM_TEE, 4, 2.2, dir);
-  const pts = side < 0 ? [start, [-14, BOTTOM_TEE[1], BOTTOM_TEE[2]], [-14, BOTTOM_TEE[1], FLOOR_Z]] : [start, [BOTTOM_TEE[0], BOTTOM_TEE[1], 188.2], [14, BOTTOM_TEE[1], 188.2], [14, BOTTOM_TEE[1], FLOOR_Z]];
-  pipe(`iliac${side}`, pts, 2.2, "art", { flanges: [false, true], caps: [false, true], bend: 2.6 });
+  const pts = side < 0 ? [start, [-14, BOTTOM_TEE[1], BOTTOM_TEE[2]], [-14, BOTTOM_TEE[1], FLOOR_Z]] : [start, [BOTTOM_TEE[0], BOTTOM_TEE[1], 187.4], [14, BOTTOM_TEE[1], 187.4], [14, BOTTOM_TEE[1], FLOOR_Z]];
+  if (side < 0) elbowed(`iliac${side}`, pts, 2.2, "art", [1], { flanges: [false, true], caps: [false, true], bend: 2.6 });
+  else pipe(`iliac${side}`, pts, 2.2, "art", { flanges: [false, true], caps: [false, true], bend: 2.6 });
 }
 // vena cava: from the pelvic floor up the right of the spine into the side of the heart deck
-const ivc = pipe("vena-cava", [[IVC[0], -3, FLOOR_Z], [IVC[0], -3, 190], [IVC[0], IVC[1], 198], [IVC[0], IVC[1], 256], [IVC[0], 0, 256], [6, 2.5, 261], [6, 2.5, HEART[2]]], 3, "vein", { flangeR: 1.15,
-  bend: 3, maxLength: 12, flanges: [true, true],
-  tees: [{ name: "ivc.renal", near: [IVC[0], IVC[1], 207.5], r: 4 }, { name: "ivc.liver", near: [IVC[0], IVC[1], 228], r: 4 }],
+const ivc = elbowed("vena-cava", [[IVC[0], -5, FLOOR_Z], [IVC[0], -5, 190], [IVC[0], IVC[1], 198], [IVC[0], IVC[1], 256], [IVC[0], 3, 256], [IVC[0], 3, HEART[2]]], 3, "vein", [3, 4], { flangeR: 1.15,
+  bend: 3, maxLength: 12, flanges: [true, false],
+  tees: [{ name: "ivc.renal", near: [IVC[0], IVC[1], 208], r: 4 }, { name: "ivc.liver", near: [IVC[0], IVC[1], 228], r: 4 }],
 });
-const RENAL_V = ivc.tees["ivc.renal"];
-const HEPATIC = ivc.tees["ivc.liver"];
+const RENAL_V = ivc[0].tees["ivc.renal"];
+const HEPATIC = ivc[0].tees["ivc.liver"];
 // jugular / superior vena cava: from the head down the right of the neck into the deck top
 pipe("jugular", [[8.5, -2, HEAD_Z], [8.5, -2, 303], [8.5, 11, 296], [5, 11, 284], [5, 11, DECK_TOP]], 2.2, "vein", { bend: 3 });
 // the right arm: an anchor block under the yoke holds the top of the muscle; artery and motor nerve land on it
@@ -535,7 +560,7 @@ for (const side of [-1, 1]) {
   const RM = LUNG_R + 0.8;
   const onSide = (deg, z, out = 0) => { const a = (deg * Math.PI) / 180; return [x - side * (RM + out) * Math.cos(a), LUNG_Y + (RM + out) * Math.sin(a), z]; };
   pipe(`pulm-artery${side}`, [fromBall(PA_TEE, 2.6, 1.5, [side, 0, 0]), [PA_TEE[0] + side * 4.5, PA_TEE[1], PA_TEE[2]], onSide(18, MANIFOLD_Z + 2, 5), onSide(18, MANIFOLD_Z + 2)], 1.5, "vein", { bend: 2.6, flanges: [false, true], caps: [false, true], flangeR: 1.2 });
-  pipe(`pulm-vein${side}`, [onSide(40, MANIFOLD_Z + 2), onSide(40, MANIFOLD_Z + 2, 3.5), [HEART[0] + side * (DECK_R + 4), 8, HEART[2] + 2], [HEART[0] + side * DECK_R, 8, HEART[2] + 2]], 1.4, "art", { bend: 2.6, flangeR: 1.15 });
+  elbowed(`pulm-vein${side}`, [onSide(40, MANIFOLD_Z + 2), onSide(40, MANIFOLD_Z + 2, 3.5), [HEART[0] + side * (DECK_R + 4), 8, HEART[2] + 2], [HEART[0] + side * DECK_R, 8, HEART[2] + 2]], 1.4, "art", [1, 2], { bend: 2.6, flangeR: 1.15 });
 }
 
 SYS = "heart gut";
@@ -548,21 +573,21 @@ const ST_LEN = G.len3(G.sub3(ST_B, ST_A));
 const SF = G.frameAlong(ST_A, ST_AXIS);
 const stomachR = (s) => {
   const u = s / ST_LEN;
-  return 2.6 + 6.0 * Math.sin(Math.PI * Math.min(1, u * 1.15)) ** 0.8 * (u < 0.87 ? 1 : 1);
+  return 2.6 + 5.6 * Math.sin(Math.PI * Math.min(1, u * 1.15)) ** 0.8 * (u < 0.87 ? 1 : 1);
 };
 const stomach = Array.from({ length: 24 }, (_, i) => { const s = (ST_LEN * i) / 23; return [s, Math.max(2.6, stomachR(s)), i > 0 && i < 23 ? 1 : 0]; });
 turned("stomach", SF, stomach, { tone: "hi" }, { part: "stomach", extra: Faded(G.ribsOf(SF, 4, ST_LEN - 4, 9.5, 18, P, { fade: [0.15, 0.6], twist: 0.6 }).filter(() => false), { tone: "faint" }) });
 pipe("esophagus", [[1, -6, HEAD_Z], [1, -6, 244], [ST_A[0] + 5.5, ST_A[1] - ST_AXIS[1] * 6, ST_A[2] - ST_AXIS[2] * 6], G.sub3(ST_A, G.mul3(ST_AXIS, 0.01))].map((p, i, l) => i === 2 ? G.sub3(ST_A, G.mul3(ST_AXIS, 6)) : p), 2, "gut", { bend: 3, rings: { pitch: 2.6, fade: [0.15, 0.6] }, flowVar: "food", flangeR: 1.2 });
 // small intestine: a long folded tube in front of the lower belly
-const SI_Y = 4;
-const siRoute = [G.add3(ST_B, G.mul3(ST_AXIS, 0.01)), G.add3(ST_B, G.mul3(ST_AXIS, 3)), [-24, SI_Y, 211], [19, SI_Y, 211], [19, SI_Y, 205], [-19, SI_Y, 205], [-19, SI_Y, 199]];
+const SI_Y = 3.5;
+const siRoute = [G.add3(ST_B, G.mul3(ST_AXIS, 0.01)), G.add3(ST_B, G.mul3(ST_AXIS, 3)), [-24, SI_Y, 210], [19, SI_Y, 210], [19, SI_Y, 200], [-19, SI_Y, 200], [-19, SI_Y, 190]];
 const COLON_X = 29;
 const COLON_Y = 4;
-const CECUM = [COLON_X, COLON_Y, 199];
-pipe("small-intestine", [...siRoute, [CECUM[0] - rimOn(4.6, 2.2), SI_Y, 199]], 2.2, "gut", { bend: 2.4, maxLength: 10, flowVar: "food", flanges: [true, false], caps: [true, false], flangeR: 1.15 });
+const CECUM = [COLON_X, SI_Y, 190];
+pipe("small-intestine", [...siRoute, [CECUM[0] - rimOn(4.6, 2.2), SI_Y, CECUM[2]]], 2.2, "gut", { bend: 2.4, maxLength: 10, flowVar: "food", flanges: [true, false], caps: [true, false], flangeR: 1.15 });
 ball("cecum", CECUM, 4.6, { tone: "mid" });
-const colon = [[COLON_X, COLON_Y, CECUM[2] + rimOn(4.6, 3.6)], [COLON_X, COLON_Y, 216], [COLON_X - 2, 14, 216], [-COLON_X + 2, 14, 216], [-COLON_X, 10, 213], [-COLON_X, 10, 192], [-16, -1, 192], [-10, -1, 192], [-10, -1, FLOOR_Z]];
-pipe("colon", colon, 3.6, "gut", { bend: 2.6, maxLength: 12, rings: { pitch: 4.2, fade: [0.12, 0.55] }, flanges: [false, true], caps: [false, true], flowVar: "stool" });
+const colon = [[COLON_X, SI_Y, CECUM[2] + rimOn(4.6, 3.6)], [COLON_X, SI_Y, 216], [27, 14, 216], [-27, 14, 216], [-31, -1, 216], [-31, -1, FLOOR_Z]];
+elbowed("colon", colon, 3.6, "gut", [1, 2, 3, 4], { bend: 2.6, maxLength: 12, rings: { pitch: 4.2, fade: [0.12, 0.55] }, flanges: [false, true], caps: [false, true], flowVar: "stool" });
 // liver: a wedge under the right dome, with a gall bladder; the hepatic vein drains into the vena cava
 const LIVER = [[14, -16], [28, -17], [36.4, -8], [32, 4], [14, 7]];
 extr("liver", LIVER, 222, 14, { tone: "hi" }, { bevel: 0.6, inner: Ln(k.ringSeam(LIVER, 229, P), { tone: "faint" }) });
@@ -572,31 +597,38 @@ pipe("hepatic-vein", [fromBall(HEPATIC, 4, 1.5, [1, 0, 0]), [14, IVC[1], HEPATIC
 
 // ---------------------------------------------------------------- kidneys and bladder
 SYS = "kidney";
-const KID = { x: 22, y: -12, z0: 199, z1: 221 };
+const KID = { x: 24, y: -12, z0: 199, z1: 221 };
 const kidR = (s) => 6.2 * Math.sqrt(Math.max(0, 1 - ((2 * s) / (KID.z1 - KID.z0) - 1) ** 2));
 const kidney = Array.from({ length: 25 }, (_, i) => { const s = ((KID.z1 - KID.z0) * i) / 24; return [s, i === 0 || i === 24 ? 0 : kidR(s), i > 0 && i < 24 ? 1 : 0]; });
-const BLADDER = [0, 12, FLOOR_Z];
-const COLLAR = { r: 8.6, z1: FLOOR_Z + 4.5 };
+const BLADDER = [0, 15, FLOOR_Z];
+const COLLAR = { r: 7, z1: FLOOR_Z + 4.5 };
 for (const side of [-1, 1]) {
   const KF = vframe(side * KID.x, KID.y, KID.z0);
   turned(`kidney${side}`, KF, kidney, { tone: "hi" }, { inner: Ln(G.arcOf(KF, 11, kidR(11), P), { tone: "faint" }) });
+  // the hilum: a flat boss on the kidney's inner side where the artery and vein connect (seated in the kidney)
+  const KSH = R.solids[R.solids.length - 1];
+  const HZ = 210;
+  const hilumX = side * (KID.x - kidR(HZ - KID.z0) + 0.8);
+  const HB = G.frameAlong([hilumX, KID.y, HZ], [-side, 0, 0]);
+  turned(`kidney${side}.hilum`, HB, [[0, 3.8], [2.2, 3.8]], { tone: "mid" }, { cut: [KSH], owner: `kidney${side}` });
+  const hface = hilumX - side * 2.2;
   SYS = "heart kidney";
-  // renal artery and vein land on the inner side of the kidney (the right artery passes in front of the vena cava, the left vein in front of the aorta)
-  const hx = (z) => side * (KID.x - kidR(z - KID.z0));
-  const fromA = fromBall(RENAL_A, 3.8, 1.2, side < 0 ? [-1, 0, 0] : [0, 1, 0]);
-  pipe(`renal-artery${side}`, side < 0 ? [fromA, G.add3(fromA, [-2.5, 0, 0]), [hx(RENAL_A[2]) + 4, KID.y, RENAL_A[2]], [hx(RENAL_A[2]), KID.y, RENAL_A[2]]] : [fromA, [AORTA[0], -5, RENAL_A[2]], [12, -5, RENAL_A[2]], [hx(RENAL_A[2]) - 4, KID.y, RENAL_A[2]], [hx(RENAL_A[2]), KID.y, RENAL_A[2]]], 1.2, "art", { flanges: [false, false], caps: [false, true], bend: 2.6 });
+  // renal artery and vein land on the hilum (the right artery passes in front of the vena cava, the left vein in front of the aorta)
+  const hx = () => hface;
+  const fromA = fromBall(RENAL_A, 3.8, 1.2, side < 0 ? [-1, 0, 0] : [0.6, 0.8, 0]);
+  pipe(`renal-artery${side}`, side < 0 ? [fromA, G.add3(fromA, [-2.5, 0, 0]), [hx() + 4, KID.y + 1.6, RENAL_A[2]], [hx(), KID.y + 1.6, RENAL_A[2]]] : [fromA, G.add3(fromA, [3, 4, 0]), [12, -5, RENAL_A[2]], [hx() - 4, KID.y + 1.6, RENAL_A[2]], [hx(), KID.y + 1.6, RENAL_A[2]]], 1.2, "art", { flanges: [false, false], caps: [false, true], bend: 2.6 });
   const fromV = fromBall(RENAL_V, 4, 1.4, side > 0 ? [1, 0, 0] : [0, 1, 0]);
-  pipe(`renal-vein${side}`, side > 0 ? [fromV, G.add3(fromV, [2.5, 0, 0]), [hx(RENAL_V[2]) - 4, KID.y, RENAL_V[2]], [hx(RENAL_V[2]), KID.y, RENAL_V[2]]] : [fromV, [IVC[0], -6.4, RENAL_V[2]], [-12, -6.4, RENAL_V[2]], [hx(RENAL_V[2]) + 4, KID.y, RENAL_V[2]], [hx(RENAL_V[2]), KID.y, RENAL_V[2]]], 1.4, "vein", { flanges: [false, false], caps: [false, true], bend: 2.6 });
+  (side < 0 ? (...a) => elbowed(a[0], a[1], a[2], a[3], [2, 3], a[4]) : pipe)(`renal-vein${side}`, side > 0 ? [fromV, G.add3(fromV, [2.5, 0, 0]), [hx() - 4, KID.y - 1, RENAL_V[2]], [hx(), KID.y - 1, RENAL_V[2]]] : [fromV, [IVC[0], -6.4, RENAL_V[2]], [-12, -6.4, RENAL_V[2]], [hx() + 4, KID.y - 1, RENAL_V[2]], [hx(), KID.y - 1, RENAL_V[2]]], 1.4, "vein", { flanges: [false, false], caps: [false, true], bend: 2.6 });
   SYS = "kidney";
   // ureter from the bottom of each kidney down and round to the side of the bladder's collar
-  const toward = G.unit3([side * 18 - BLADDER[0], 4 - BLADDER[1], 0]);
+  const toward = G.unit3([side * 16 - BLADDER[0], 2 - BLADDER[1], 0]);
   const end = [BLADDER[0] + toward[0] * COLLAR.r, BLADDER[1] + toward[1] * COLLAR.r, FLOOR_Z + 2.25];
-  pipe(`ureter${side}`, [[side * KID.x, KID.y, KID.z0 + 0.284], [side * KID.x, KID.y, end[2]], [side * 18, 4, end[2]], end], 1, "urine", { bend: 3, flowVar: "urine", flangeR: 1.4 });
+  pipe(`ureter${side}`, [[side * KID.x, KID.y, KID.z0 + 0.284], [side * KID.x, KID.y, end[2]], [side * 16, 2, end[2]], end], 1, "urine", { bend: 3, flowVar: "urine", flangeR: 1.4 });
 }
 turned("bladder.collar", vframe(BLADDER[0], BLADDER[1]), [[FLOOR_Z, COLLAR.r], [COLLAR.z1, COLLAR.r]], { tone: "mid" }, { bevel: 0.3, extra: Dots(G.dotsOf(vframe(BLADDER[0], BLADDER[1]), COLLAR.z1, COLLAR.r - 1, 10, P, { all: true }), { size: 0.38, tone: "mid" }) });
-const bladder = [[0, 7.8], [2.5, 8.4, 1], [5, 8, 1], [7.5, 6.2, 1], [9, 3.4, 1], [9.6, 0]];
+const bladder = [[0, 6.6], [2.5, 7.1, 1], [5, 6.8, 1], [7.5, 5.3, 1], [9, 2.8, 1], [9.6, 0]];
 const BF0 = vframe(BLADDER[0], BLADDER[1], COLLAR.z1);
-put("bladder", [BLADDER[0], BLADDER[1], COLLAR.z1 + 4], `<g data-part="bladder">${S(G.lathe([[0, 0], ...bladder], BF0, P, { smooth: true }), { tone: "hi", inner: Ln(G.arcOf(BF0, 2.5, 8.4, P), { tone: "faint" }) })}</g>`, [record(A.solid(BF0, bladder, { name: "bladder" }))]);
+put("bladder", [BLADDER[0], BLADDER[1], COLLAR.z1 + 4], `<g data-part="bladder">${S(G.lathe([[0, 0], ...bladder], BF0, P, { smooth: true }), { tone: "hi", inner: Ln(G.arcOf(BF0, 2.5, 7.1, P), { tone: "faint" }) })}</g>`, [record(A.solid(BF0, bladder, { name: "bladder" }))]);
 
 // ---------------------------------------------------------------- nerves: spinal cord, a junction on the yoke, phrenic nerves to the domes, the motor nerve to the arm
 SYS = "brain";
@@ -604,7 +636,7 @@ const JB = { x: -6.5, y: -17, w: 13, d: 6.5, r: 1.2 };
 slab("junction", JB, TOP_Z + 7, 5, { tone: "mid" }, { steps: 3, bevel: 0.4, extra: Dots([at([JB.x + 2, JB.y + 2, TOP_Z + 12]), at([JB.x + JB.w - 2, JB.y + 2, TOP_Z + 12])], { size: 0.4 }) });
 pipe("spinal-cord", [[0, -14.6, HEAD_Z], [0, -14.6, TOP_Z + 12]], 1, "nerve", { flanges: [true, true], flangeR: 1.6, flowVar: "cord" });
 SYS = "brain move";
-pipe("motor-nerve", [[JB.x + JB.w, -15.5, TOP_Z + 8.2], [44, -15.5, TOP_Z + 8.2], [48, -7.75, TOP_Z + 8.2], [ARM_X - 1.6, -7.75, TOP_Z + 8.2]], 0.7, "nerve", { flanges: [false, false], flowVar: "arm", bend: 4 });
+elbowed("motor-nerve", [[JB.x + JB.w, -15.5, TOP_Z + 8.2], [ARM_X, -15.5, TOP_Z + 8.2], [ARM_X, -7.75 - 1.6, TOP_Z + 8.2]], 0.7, "nerve", [1], { flanges: [false, false], flowVar: "arm", bend: 4 });
 SYS = "brain lungs";
 for (const side of [-1, 1]) {
   const x = side < 0 ? -7 : 5.4;
@@ -625,12 +657,13 @@ const CSS = `
 .vs[data-k="vein"] .tb-body{fill:var(--vein-body)}
 .iso-svg{--p-cord:-200;--p-arm:-200;--p-phrL:-200;--p-phrR:-200}
 .muscle[data-drive] .tb-body{fill:var(--anatomy-lit-shade)}
-.muscle[data-drive] .tb-edge,.muscle[data-drive] path[class*="edge"]{stroke:var(--anatomy-lit)}
+.muscle[data-drive] .tb-edge{stroke:var(--anatomy-lit)}
 .iso{--dim-hi:#a9a9ad;--dim-mid:#c9c9cc;--dim-lo:#dddddf;--dim-shade:#f1f1ee;--dim-art:#e9b8b9;--dim-vein:#b9c3e6}
 .iso[data-theme="dark"]{--dim-hi:#4a4a4a;--dim-mid:#333;--dim-lo:#262626;--dim-shade:#161616;--dim-art:#6a3436;--dim-vein:#33405f}
 .iso-svg[data-focus] .it:not([data-on]){--anatomy-hi:var(--dim-hi);--anatomy-mid:var(--dim-mid);--anatomy-lo:var(--dim-lo);--anatomy-faint:var(--dim-lo);--anatomy-shade-0:var(--dim-shade);--anatomy-shade-1:var(--dim-shade);--anatomy-shade-2:var(--anatomy-paper);--anatomy-shade-3:var(--anatomy-paper);--art-ink:var(--dim-art);--vein-ink:var(--dim-vein);--art-body:var(--anatomy-paper);--vein-body:var(--anatomy-paper);--nerve-ink:var(--dim-hi)}
 .iso-svg[data-focus] .it[data-on]{--anatomy-hi:var(--anatomy-lit);--anatomy-mid:var(--anatomy-hi)}
 .it .iso-fill,.it .iso-shade,.it .iso-top,.it .iso-line,.it .tb-body{transition:fill .35s,stroke .35s}
+.iso-stage .iso-svg{overflow:hidden}
 .iso-stage:focus-visible{outline:1px solid var(--anatomy-muted);outline-offset:6px}
 .hb-controls{display:grid;gap:12px;margin:18px 0 0;font-family:var(--anatomy-mono);font-size:12px;color:var(--anatomy-text)}
 .hb-effort{display:flex;align-items:center;gap:12px}
@@ -656,7 +689,12 @@ A.settle(R, P);
 R.items.sort((a, b) => a.key - b.key);
 // rim-on-sphere joints and parts seated in their host by design: each pair overlaps itself on screen at the joint
 const JOINTS = [["shin*", "knee*"], ["shin*", "ankle*"], ["thigh*", "hip*"], ["thigh*", "knee*"], ["humerus*", "shoulder*"], ["humerus*", "elbow*"], ["forearm*", "elbow*"], ["forearm*", "wrist*"], ["hand*", "wrist*"], ["heart", "heart.deck"], ["skull", "eye*"], ["skull", "nose"], ["skull", "mouth"], ["skull", "ear*"], ["small-intestine*", "stomach"]];
-A.auditOrExit(R, P, { allow: JOINTS });
+// nerves laid along the top of the yoke, like cables clipped to a beam
+const ON_YOKE = [["motor-nerve*", "yoke"], ["phrenic-1", "yoke"], ["phrenic1", "yoke"]];
+// screen coincidences looked at in 4× close-ups: lines that pass 7–28 units apart in depth and only touch on screen,
+// and the descending colon running in front of the left shell panel (a broad panel the check takes for a rod)
+const SEEN = [["phrenic1", "jugular"], ["phrenic-1", "carotid"], ["pulm-artery1", "jugular"], ["bronchus1*", "jugular"], ["bronchus1*", "spine.*"], ["iliac*", "spine.*"], ["iliac*", "small-intestine"], ["renal-artery1", "colon*"], ["colon*", "wall.left"]];
+A.auditOrExit(R, P, { allow: [...JOINTS, ["skull", "brain"], ["small-intestine*", "small-intestine.fl0"]], crowd: [...ON_YOKE, ...SEEN] });
 
 const armSvg = `<g data-part="arm" data-sys="move" class="it">${LIVE.arm(ARM.rest, 0).svg}</g>`;
 const items = R.items.map((item) => `<g class="it"${item.sys ? ` data-sys="${item.sys}"` : ""}${item.part ? ` data-part="${item.part}"` : ""}>${item.svg}</g>`).join("");
@@ -680,9 +718,20 @@ const DATA = {
   heartPivot: at([HEART[0], HEART[1], HEART[2]]),
   bladderPivot: at([BLADDER[0], BLADDER[1], COLLAR.z1]),
   stomachPivot: at(ST_A),
-  lengths: Object.fromEntries([["cord", "spinal-cord"], ["arm", "motor-nerve"], ["phrL", "phrenic-1"], ["phrR", "phrenic1"]].map(([key, name]) => [key, ROUTES.find((r) => r.name === name).screen])),
+  lengths: Object.fromEntries([["cord", "spinal-cord"], ["arm", "motor-nerve"], ["phrL", "phrenic-1"], ["phrR", "phrenic1"]].map(([key, name]) => [key, ROUTES.filter((r) => r.name === name || r.name.startsWith(name + ".")).reduce((a, r) => a + r.screen, 0) + 8])),
   systems: SYSTEMS,
   overview: OVERVIEW,
+  views: (() => {
+    // the torso view keeps the card's aspect, so the card does not change size when it zooms
+    const pts = [[0, -8, HEAD_Z + 52], [-58, -20, 307], [58, -20, 307], [-42, -4, TRAY_Z], [42, -4, TRAY_Z], [ARM_X, 30, 262], [ARM_X + 12, -10, 180], [-ARM_X, -20, 180], [0, 22, TRAY_Z]].map(at);
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    let [x0, x1, y0, y1] = [Math.min(...xs) - 14, Math.max(...xs) + 14, Math.min(...ys) - 14, Math.max(...ys) + 14];
+    let w = x1 - x0;
+    let h = y1 - y0;
+    if (w / h < W / H) { const nw = (h * W) / H; x0 -= (nw - w) / 2; w = nw; } else { const nh = (w * H) / W; y0 -= (nh - h) / 2; h = nh; }
+    return { full: [0, 0, W, H], torso: [x0, y0, w, h].map((v) => Math.round(v * 100) / 100) };
+  })(),
 };
 const count = (kind) => ROUTES.filter((r) => r.kind === kind).length;
 console.log("routes", ROUTES.length, "arteries", count("art"), "veins", count("vein"), "nerves", count("nerve"));
@@ -695,7 +744,7 @@ const svg = k.figureSvg({
 const body = k.plateHtml({
   fig: "Fig 1",
   title: "How a body works",
-  hint: "Hover a system · ←/→ work",
+  hint: "Pick a system · ←/→ work",
   readout: `${Math.round(steady(0).hr)} bpm · ${Math.round(steady(0).rr)} breaths/min · ${steady(0).co.toFixed(1)} L/min`,
   keys: [
     { mark: "red", label: "Oxygen-rich blood (arteries, and pulmonary veins)" },
@@ -708,7 +757,7 @@ const body = k.plateHtml({
 const controls = `
 <div class="hb-controls">
   <label class="hb-effort"><span>Work</span><input type="range" min="0" max="100" value="0" data-effort aria-label="How hard the arm works"><b data-effort-label>rest</b></label>
-  <div class="hb-actions"><button type="button" data-curl>Curl once</button><button type="button" data-eat>Eat a meal</button><button type="button" data-drink>Drink 500 mL</button></div>
+  <div class="hb-actions"><button type="button" data-curl>Curl once</button><button type="button" data-eat>Eat a meal</button><button type="button" data-drink>Drink 500 mL</button><button type="button" data-zoom aria-pressed="false">Zoom to the torso</button></div>
   <div class="hb-systems" role="toolbar" aria-label="Body systems">${SYSTEMS.map((sys, i) => `<button type="button" data-sys-button="${sys.id}" aria-pressed="false"><span>0${i + 1}</span>${sys.title}</button>`).join("")}</div>
 </div>
 <section class="hb-panel" data-panel aria-live="polite">

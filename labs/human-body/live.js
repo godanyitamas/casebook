@@ -171,6 +171,7 @@ function runTour(dt) {
     tourStep = step;
     const s = TOUR[step];
     focus(s.focus);
+    pinned = s.focus;
     setEffort(s.effort, false);
     if (s.act === "eat") eat();
     if (s.act === "drink") drink();
@@ -275,12 +276,40 @@ function run() {
 }
 new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (visible) run(); }, { rootMargin: "120px 0px" }).observe(stage);
 
+// ------------------------------------------------------------------ zoom: the whole figure, or the head and torso where the organs are
+const zoomButton = document.querySelector("[data-zoom]");
+let zoomed = false;
+let viewNow = null;
+let viewFrame = 0;
+function setZoom(on, instant = false) {
+  zoomed = on;
+  zoomButton.textContent = on ? "Show the whole figure" : "Zoom to the torso";
+  zoomButton.setAttribute("aria-pressed", String(on));
+  const target = on ? DATA.views.torso : DATA.views.full;
+  const from = viewNow ?? target;
+  const t0 = performance.now();
+  cancelAnimationFrame(viewFrame);
+  const step = (t) => {
+    const u = instant || still.matches ? 1 : Math.min(1, (t - t0) / 650);
+    const e = u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2;
+    viewNow = from.map((v, i) => v + (target[i] - v) * e);
+    svg.setAttribute("viewBox", viewNow.map((v) => v.toFixed(2)).join(" "));
+    if (u < 1) viewFrame = requestAnimationFrame(step);
+  };
+  step(t0);
+}
+zoomButton.addEventListener("click", () => { interact(); setZoom(!zoomed); });
+setZoom(matchMedia("(max-width: 560px)").matches, true);
+
 // ------------------------------------------------------------------ input
 effortInput.addEventListener("input", () => setEffort(Number(effortInput.value) / 100));
 document.querySelector("[data-eat]").addEventListener("click", () => { interact(); eat(); });
 document.querySelector("[data-drink]").addEventListener("click", () => { interact(); drink(); });
 document.querySelector("[data-curl]").addEventListener("click", () => { interact(); curl(); });
-for (const b of buttons) b.addEventListener("click", () => { interact(); focus(S.focus === b.dataset.sysButton ? null : b.dataset.sysButton); });
+// a picked system stays lit; hovering the figure previews another and lets go when the pointer leaves
+let pinned = null;
+const pick = (name) => { pinned = name; focus(name); };
+for (const b of buttons) b.addEventListener("click", () => { interact(); pick(pinned === b.dataset.sysButton ? null : b.dataset.sysButton); });
 svg.addEventListener("pointerover", (event) => {
   const it = event.target.closest(".it[data-sys]");
   if (!it) return;
@@ -289,23 +318,29 @@ svg.addEventListener("pointerover", (event) => {
   interact();
   focus(sys);
 });
-stage.addEventListener("pointerleave", () => { S.idleAt = S.clock; });
+stage.addEventListener("pointerleave", () => { S.idleAt = S.clock; if (!S.touring) focus(pinned); });
+svg.addEventListener("click", (event) => {
+  const it = event.target.closest(".it[data-sys]");
+  const sys = it ? it.dataset.sys.split(" ")[0] : null;
+  if (sys && sys !== "frame") { interact(); pick(sys); }
+});
 stage.addEventListener("keydown", (event) => {
   const ids = SYSTEMS.map((s) => s.id);
   const i = ids.indexOf(S.focus);
   let handled = true;
   if (event.key === "ArrowRight") setEffort(S.target + (event.shiftKey ? 0.25 : 0.1));
   else if (event.key === "ArrowLeft") setEffort(S.target - (event.shiftKey ? 0.25 : 0.1));
-  else if (event.key === "ArrowDown") { interact(); focus(ids[(i + 1) % ids.length]); }
-  else if (event.key === "ArrowUp") { interact(); focus(ids[(i - 1 + ids.length) % ids.length]); }
+  else if (event.key === "ArrowDown") { interact(); pick(ids[(i + 1) % ids.length]); }
+  else if (event.key === "ArrowUp") { interact(); pick(ids[(i - 1 + ids.length) % ids.length]); }
   else if (event.key === "Home") setEffort(0);
   else if (event.key === "End") setEffort(1);
   else if (event.key === " " || event.key === "Enter") { interact(); curl(); }
-  else if (event.key === "Escape") { interact(); focus(null); }
-  else if (/^[1-6]$/.test(event.key)) { interact(); focus(ids[Number(event.key) - 1]); }
+  else if (event.key === "Escape") { interact(); pick(null); }
+  else if (/^[1-6]$/.test(event.key)) { interact(); pick(ids[Number(event.key) - 1]); }
   else handled = false;
   if (handled) event.preventDefault();
 });
+window.__hb = S;
 setEffort(0, false);
 focus(null);
 writePanel(true);
