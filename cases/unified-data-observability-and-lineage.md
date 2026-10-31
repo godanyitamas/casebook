@@ -165,6 +165,12 @@ Details: `decisions/batch-telemetry-model.md`.
 
 - **Lab (synthetic, agent-built, not evidence about the real tables):** `labs/hourly-volume-detectors/` compares robust z against the same hour on 7 previous weeks, EWMA and CUSUM on simulated hourly volume. Hypotheses to test on `process_metrics_per_hour`: per-hour 7-point MADs make the scale too noisy (a false alarm every 15–21 h on clean simulated data) while a pooled relative scale does not; robust z misses a sustained −8 % shift that EWMA and CUSUM catch within 6–8 h.
 
+### 2026-10-31: aggregation re-read without union
+
+- **Decided (tried):** the aggregation jobs use the micro-batch only to find the changed keys; rows come from the re-read of `process_telemetry`, without union or `distinct`. The micro-batch's rows are already committed, so the re-read always contains them. Supersedes the "under consideration" note of 2026-10-29.
+- **Measured:** a duplicate-key check on raw found no duplicate rows (scope not recorded). Without `distinct`, a future duplicate would be counted twice, so the check remains the guard. It does not verify replay (H2/H3) unless the checked period included restarts or replays.
+- **Open:** whether the re-read skips files on the clustering columns (check the scan in the Spark UI); for `process_metrics_per_hour`, the keys must be the affected (`job_name`, `process_hour`) pairs, re-reading every raw row of those hours.
+
 ---
 
 ## Evidence
