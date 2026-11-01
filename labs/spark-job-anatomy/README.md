@@ -76,13 +76,13 @@ Controls: **Run the job** (Space), **Pause** (P), a speed slider. The eleven par
   - the external shuffle service;
   - the driver collecting results (`write` tasks send back only commit messages and write statistics);
   - the job commit on the driver after the last task (`commitJob`, which writes `_SUCCESS`).
-- **Shuffle files outlive the job.** Here they stay until the next run clears the bench. Spark keeps them until the shuffle is garbage-collected, which is why a later job can skip a stage. I have not checked when Spark SQL reuses a shuffle between two actions on the same DataFrame.
+- **Shuffle files outlive the job.** Here they stay until the next run clears the bench. Spark keeps them until the shuffle is garbage-collected. Measured below: a second `collect()` on the same DataFrame skipped stage 0, while a second `write` or a `count` ran it again.
 - **Shuffle fetches are drawn one packet per segment.** Spark groups blocks from the same executor into larger requests, up to `maxBytesInFlight`. Blocks of another executor on the same host are read from disk, not over the network.
 - **Cluster manager role is simplified.** The heartbeat blink is decorative timing, not a Spark interval. Executors heartbeat to the driver (`spark.executor.heartbeatInterval`, 10 s by default), and workers heartbeat to the cluster manager.
 
 ## Fact check (2026-11-01, against the Spark 4.0.1 source)
 
-Checked on request after the figure was built. The agent read the Spark v4.0.1 source on GitHub. A plan to also run the job on a local 2 × 2 cluster was blocked by the session's permission rules, so nothing below is measured.
+Checked on request after the figure was built, in two ways: by reading the Spark v4.0.1 source on GitHub, and by running the figure's query on a real Spark 4.0.1 cluster (results in the next section).
 
 | Claim in the figure | Verdict | Where it is in the source |
 |---|---|---|
@@ -101,9 +101,33 @@ Checked on request after the figure was built. The agent read the Spark v4.0.1 s
 | The job ends when the last task reports | **imprecise** for a write: the driver then commits the job | `FileFormatWriter`: `runJob(...)` then `committer.commitJob`. Noted above; not drawn |
 | Defaults: shuffle partitions 200, `spark.task.cpus` 1, executor heartbeat 10 s, external shuffle service off | correct | `SQLConf.SHUFFLE_PARTITIONS`; `config/package.scala` |
 
-Still open, not checked:
-- whether a second action on the same DataFrame reuses its shuffle, so that stage 0 shows as skipped;
-- the job count for this code measured in a real Spark UI. The table above predicts 3 jobs on Spark 3.2+ defaults.
+## Measured on Spark 4.0.1 (`check-spark.py`)
+
+The setup was `local-cluster[2,2,1024]`: two executor JVMs with two cores each, on one machine. The input was 8 Parquet files (800 k rows, 30 % clicks), read as 8 partitions. The query was the figure's. It ran once with AQE on (the default) and once with AQE off. Job, stage and task counts come from the Spark REST API.
+
+| What | AQE on (default) | AQE off |
+|---|---|---|
+| `spark.read.parquet` without a schema | 1 job, 1 task | 1 job, 1 task |
+| `filter` + `repartition` (no action yet) | 0 jobs | 0 jobs |
+| `write` | **2 jobs**: map stage (8 tasks), then result (3 tasks, 1 stage skipped) | **1 job**, 2 stages, 11 tasks |
+| Output | 3 `part-` files + `_SUCCESS` | same |
+| Shuffle files on disk | 8 `.data` + 8 `.index` (one pair per map task) | same |
+| Shuffle blocks read by stage 1 | 24 = 8 map outputs × 3 reducers (12 local + 12 remote in one run, 10 + 14 in another) | 24 (14 local + 10 remote) |
+| Stage 1's first task launch vs stage 0's completion | 97 ms after | 35 ms after |
+| Map tasks per executor | 4 + 4 in one run, 6 + 2 in another | 6 + 2 |
+| Second `write` on the same DataFrame | stage 0 runs again (8 tasks) | stage 0 runs again (11 tasks in all) |
+| `count()` on the same DataFrame | stage 0 runs again | stage 0 runs again |
+| Second `collect()` on the same DataFrame | stage 0 **skipped**, 3 tasks | stage 0 **skipped**, 3 tasks |
+
+What this settles:
+- The figure is exactly right for AQE off: one action, one job, two stages, 8 + 3 tasks, one shuffle file pair per map task, 3 output files.
+- With the default AQE on, the same write is two jobs. With the Parquet schema read, the code produces 3 jobs, as the source predicted.
+- Stage 1 never started before stage 0 had finished.
+- The input-packing model (`inputPartitions`) gave the same counts as Spark for three file sets: 8 files of 1 MiB → 8, 8 of 300 KiB → 4, and 2500/700/200/200/90 KiB → 5 (with `maxPartitionBytes` 1 MiB, `openCostInBytes` 32 KiB, 4 cores).
+- Shuffle reuse is real but narrow. Only an action that reuses the DataFrame's physical plan (`collect()` again) skipped stage 0. `write` and `count` build a new plan and recompute it.
+- **Task placement is not even.** The figure always gives each executor 4 of the 8 map tasks. The real runs split 4 + 4 once and 6 + 2 twice, depending on which executor was free first (tasks here took milliseconds, and executor start-up differs). How many shuffle reads are local follows from that placement.
+
+Not measured: anything about real-size data (the input was a few MB) or a cluster across several machines.
 
 ## Checks
 
@@ -116,4 +140,6 @@ Still open, not checked:
 
 `node build.mjs` writes `spark-job.html`, and `node build.mjs --dark` writes `spark-job-dark.html`; add `--audit` to run the geometry audit. The build needs the figure kit from the anatomy skill, found at `~/.claude/skills/anatomy` or `$ANATOMY_DIR`. Viewing the HTML needs nothing.
 
-Files: `model.mjs` (the job and its schedule), `build.mjs` (geometry and page), `live.js` (the page's loop, packets and controls).
+Files: `model.mjs` (the job and its schedule), `build.mjs` (geometry and page), `live.js` (the page's loop, packets and controls), `check-spark.py` (the measurement above).
+
+To rerun the measurement, unpack Spark 4.0.1 (`spark-4.0.1-bin-hadoop3`), set `SPARK_HOME`, put `$SPARK_HOME/python` and the bundled py4j zip on `PYTHONPATH`, and run `python3 check-spark.py true` (AQE on) or `false`. It needs Java 17 or 21 and writes to `/tmp/spark/work`.
