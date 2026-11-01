@@ -94,3 +94,4 @@ For large incremental aggregation jobs, make the input scope explicit: define wh
 - How much improvement came from partition pruning, column selection, Photon, and broadcast joins individually?
 - How representative was the smaller dataset used to check row counts?
 - What specific measures were used to confirm output correctness beyond row counts?
+- Was dynamic partition pruning expected to apply to these joins, and did the plan show it? That would explain the original expectation that join conditions filter the inputs. Not checked; the lab only shows where AQE can switch a join to broadcast (after the map stage, `labs/spark-job-anatomy/`).

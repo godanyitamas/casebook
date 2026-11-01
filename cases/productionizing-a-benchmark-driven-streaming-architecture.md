@@ -138,3 +138,4 @@ A production data architecture should be evaluated against the real workload, fa
 - The precise failure/recovery behavior of each Silver task under every type of incident is not reconstructed.
 - The final partitioning experiments and query-performance measurements should be recovered if stronger quantitative evidence is needed.
 - It remains an open architectural question whether all of the explicit coordination complexity introduced by the independent Silver streams was justified by the overall production benefits.
+- A non-splittable file is one task however large, and concurrent tasks on one executor share its heap (`labs/spark-job-anatomy/`, `check-splits.py`). Was the large-file class sized by memory per core (fewer cores per executor) or by memory per executor? The job configurations would show it.

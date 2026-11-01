@@ -333,3 +333,4 @@ The strongest signals come from combining platform data with knowledge of what t
 - Which parts of the telemetry and signal model can be standardized across teams?
 - Which parts must remain workload-specific?
 - Can the dashboard become part of a recurring engineering review or another normal team workflow without becoming passive reporting?
+- Can slot utilisation (busy core-seconds over paid core-seconds, from task metrics) flag over-sized clusters? Stage 1 of `labs/spark-job-anatomy/` keeps 1 of 4 cores idle.

@@ -54,6 +54,8 @@ A full AST and subsequent nested row structures likely increased peak live memor
 
 The old parser's reusable outputs were not explicitly cached, and parsing was likely evaluated again for separate writes. In the new job, reused datasets were cached and the parser was not called again for those uses. This is a strong candidate for reduced total CPU and elapsed time, but its contribution has not been isolated from the parser rewrite.
 
+Mechanism confirmed in `labs/spark-job-anatomy/` (`check-reuse.py`): two writes from one uncached DataFrame ran an expensive UDF twice per row, inside `foreachBatch` too; `persist()` brought it to once. This confirms the mechanism, not its share of the historical speed-up.
+
 ### Driver pressure has a separate or additional cause
 
 High driver resource use was observed, but the available executor heap evidence does not establish its cause.
@@ -87,3 +89,4 @@ When large inputs cause resource pressure, inspect both per-input materializatio
 - What driver-side operation or data flow caused its CPU, heap, and GC pressure?
 - Can the parser-only contribution be separated from the caching/reuse change using available stage or batch metrics?
 - Which additional malformed-input, boundary, or retry cases should be tested?
+- Did the old job write several outputs from one uncached batch DataFrame? The old code would settle the repeated-evaluation hypothesis directly.

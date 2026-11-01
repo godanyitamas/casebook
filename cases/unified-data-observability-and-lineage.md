@@ -459,6 +459,7 @@ Potential connections, not evidence that the problem is already solved:
 - `cases/databricks-comment-metadata-ownership.md`: business owns freshness expectations; engineering owns the mechanism.
 - `cases/streaming-file-parser-rework.md`: file size vs duration per batch would have surfaced large-file pressure earlier.
 - `cases/repartitioning-large-delta-table.md`: retention and lifecycle operations bound long-lived assumptions; job recreation during a workspace move would split `job_id` continuity.
+- `labs/spark-job-anatomy/`: Spark job IDs are not a stable identity (the same write was 1 or 2 jobs depending on AQE, after a schema-read job), which supports keying on `query_id` and `batch_id`.
 - `decisions/batch-telemetry-model.md`, `decisions/message-histogram-contract-v1.md`.
 
 ## Reusable lesson (provisional)
