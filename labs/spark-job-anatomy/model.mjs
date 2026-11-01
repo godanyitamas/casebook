@@ -64,7 +64,8 @@ export function cardsOf(p, job = JOB) {
 }
 
 export const SLOTS = JOB.executors.flatMap((e, ei) => Array.from({ length: e.cores }, (_, c) => ({ exec: ei, core: c, id: `${e.id}${c}` })));
-// Spark's TaskSchedulerImpl spreads work across executors: offers go round-robin over hosts
+// Spark's TaskSchedulerImpl spreads work across executors: one task per executor per pass over the offers.
+// Spark shuffles the executor order at random (Random.shuffle); the figure fixes it as A, B.
 export const OFFER_ORDER = (() => {
   const out = [];
   const most = Math.max(...JOB.executors.map((e) => e.cores));

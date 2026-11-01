@@ -46,10 +46,11 @@ Controls: **Run the job** (Space), **Pause** (P), a speed slider. The eleven par
 
 ## Model (`model.mjs`)
 
-- **Input partitions.** The model follows Spark 3.x `FilePartition` packing. With `maxPartitionBytes` 128 MB, `openCostInBytes` 4 MB and a default parallelism of 4 cores, it gets `bytesPerCore` = (1024 + 8·4) / 4 = 264 MB. The split size is min(128, 264) = 128 MB, which gives 8 partitions. The count comes out of the computation; it is not set by hand.
+- **Input partitions.** The model follows Spark's `FilePartition` packing. With `maxPartitionBytes` 128 MB, `openCostInBytes` 4 MB and a default parallelism of 4 cores, it gets `bytesPerCore` = (1024 + 8·4) / 4 = 264 MB. The split size is min(128, 264) = 128 MB, which gives 8 partitions. The count comes out of the computation; it is not set by hand.
+  - The count depends on the cluster, not only on the files. The same 1 GB gives 8 partitions on 2, 4 or 8 cores, 16 partitions on 16 cores (66 MB splits) and 32 on 32 cores.
 - **Shuffle partitions.** There are 3, because `repartition(3, …)` names the count. Without it, `spark.sql.shuffle.partitions` (200) would apply, or whatever AQE coalesces it to.
 - **Scheduling** is a discrete-event simulation:
-  - The driver offers slots round-robin across executors.
+  - The driver offers one task per executor per pass, so work spreads across executors. Spark shuffles the executor order at random; the model always starts with A.
   - A slot gets its next task only when the driver receives the previous task's status.
   - Stage 1 is submitted only after every stage 0 status has arrived.
   - With 8 tasks on 4 slots, stage 0 runs in two ragged waves. With 3 tasks, one slot idles in stage 1.
@@ -62,7 +63,10 @@ Controls: **Run the job** (Space), **Pause** (P), a speed slider. The eleven par
 
 ## Simplifications and what the figure does not show
 
-- **AQE splits the work into more jobs.** With adaptive query execution (on by default since Spark 3.2), Spark SQL submits each shuffle stage as its own job. The Spark UI can then show this query as more than one job, with the earlier stage listed as skipped in the later job. The figure shows the classic model: one action, one job, two stages.
+- **On default settings this code runs more jobs than the figure shows.** The figure draws the classic model: one action, one job, two stages.
+  - With adaptive query execution (on by default since Spark 3.2), Spark SQL submits stage 0 as a map-stage job of its own (`submitMapStage` takes a new job ID). Stage 1 then runs as a second job that lists stage 0 as skipped.
+  - `spark.read.parquet` without a schema runs a small job of its own before any action, to read one file's footer for the schema.
+  - So on Spark 3.2+ defaults, the UI would show 3 jobs for this code: a schema read, the map stage and the result stage. The readout therefore says "job", not "job 0".
 - **Shuffle file layout is idealised.** Exactly one card per key bucket per map task means no skew and no partial aggregation. Real shuffle files differ in size per segment, and one hot key makes one reduce task much longer.
 - **Not drawn:**
   - data locality (object storage has none; HDFS does);
@@ -70,9 +74,36 @@ Controls: **Run the job** (Space), **Pause** (P), a speed slider. The eleven par
   - dynamic allocation;
   - memory and spill;
   - the external shuffle service;
-  - the driver collecting results (`write` sends back only commit messages).
+  - the driver collecting results (`write` tasks send back only commit messages and write statistics);
+  - the job commit on the driver after the last task (`commitJob`, which writes `_SUCCESS`).
 - **Shuffle files outlive the job.** Here they stay until the next run clears the bench. Spark keeps them until the shuffle is garbage-collected, which is why a later job can skip a stage. I have not checked when Spark SQL reuses a shuffle between two actions on the same DataFrame.
+- **Shuffle fetches are drawn one packet per segment.** Spark groups blocks from the same executor into larger requests, up to `maxBytesInFlight`. Blocks of another executor on the same host are read from disk, not over the network.
 - **Cluster manager role is simplified.** The heartbeat blink is decorative timing, not a Spark interval. Executors heartbeat to the driver (`spark.executor.heartbeatInterval`, 10 s by default), and workers heartbeat to the cluster manager.
+
+## Fact check (2026-11-01, against the Spark 4.0.1 source)
+
+Checked on request after the figure was built. The agent read the Spark v4.0.1 source on GitHub. A plan to also run the job on a local 2 × 2 cluster was blocked by the session's permission rules, so nothing below is measured.
+
+| Claim in the figure | Verdict | Where it is in the source |
+|---|---|---|
+| Files are split at `maxPartitionBytes` (128 MB), each file costs `openCostInBytes` (4 MB), split size = min(maxPartitionBytes, max(openCost, total / defaultParallelism)), pieces packed largest first (next fit) | correct | `FilePartition.maxSplitBytes`, `getFilePartitions`; `DataSourceScanExec` (`sortBy(_.length)` reversed, total includes open cost) |
+| defaultParallelism = total executor cores (here 4) | correct, min 2 | `CoarseGrainedSchedulerBackend.defaultParallelism`: `max(totalCoreCount, 2)` |
+| 8 partitions for 1 GB in 8 × 128 MB files | correct for 2–8 cores only | same formula; 16 partitions at 16 cores. The text was fixed to say so |
+| A finished task frees its core and the driver offers that executor the next task | correct | `CoarseGrainedSchedulerBackend`, `StatusUpdate` → `freeCores += taskCpus`, `makeOffers(executorId)` |
+| Offers spread tasks across executors | correct; the order is random, not fixed | `TaskSchedulerImpl.shuffleOffers` = `Random.shuffle`; one task per offer per pass |
+| Stage 1 starts only after every stage 0 output is registered | correct | `DAGScheduler`: child waits in `waitingStages` until `getMissingParentStages` is empty; map statuses registered via `mapOutputTracker.registerMapOutput` |
+| One map output file per map task, sorted by target partition, reducers read contiguous regions | correct | `SortShuffleManager` class comment |
+| Remote shuffle requests first, local blocks read while they are in flight | correct (remote order randomised; host-local blocks read from disk) | `ShuffleBlockFetcherIterator.initialize` |
+| `repartition(3, col)` keeps 3 partitions under AQE | correct | `CoalesceShufflePartitions.supportedShuffleOrigins` excludes `REPARTITION_BY_NUM` |
+| "One action, one job" | **incomplete**: AQE (default `true`) submits each shuffle stage as its own job | `ShuffleExchangeExec` → `submitMapStage`; `DAGScheduler.submitMapStage` takes a new job ID. Text fixed |
+| Nothing runs before the action | **incomplete** for this code: Parquet schema inference runs a job | `ParquetUtils.inferSchema` → `mergeSchemasInParallel` → `parallelize(...).collect()`. Text fixed |
+| The driver sends code with each task | **imprecise**: the stage's code is broadcast once per stage; the task message carries the partition and a reference to it | `DAGScheduler.submitMissingTasks`: `taskBinary = sc.broadcast(taskBinaryBytes)`. Text fixed |
+| The job ends when the last task reports | **imprecise** for a write: the driver then commits the job | `FileFormatWriter`: `runJob(...)` then `committer.commitJob`. Noted above; not drawn |
+| Defaults: shuffle partitions 200, `spark.task.cpus` 1, executor heartbeat 10 s, external shuffle service off | correct | `SQLConf.SHUFFLE_PARTITIONS`; `config/package.scala` |
+
+Still open, not checked:
+- whether a second action on the same DataFrame reuses its shuffle, so that stage 0 shows as skipped;
+- the job count for this code measured in a real Spark UI. The table above predicts 3 jobs on Spark 3.2+ defaults.
 
 ## Checks
 

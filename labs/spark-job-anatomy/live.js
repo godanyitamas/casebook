@@ -200,11 +200,11 @@ function draw(t) {
   const cores = busyNow.filter(Boolean).length;
   let text;
   if (!running) text = ran ? "idle · Space runs the job again" : "idle · Space runs a job";
-  else if (t < JOB.plan) text = "job 0 · planning: 2 stages, 11 tasks";
+  else if (t < JOB.plan) text = "job · planning: 2 stages, 11 tasks";
   else if (t < PLAN.stage0Done) text = `stage 0 · ${done0}/${nMap} tasks done · ${cores}/4 cores busy`;
   else if (t < PLAN.submit1 + JOB.launch) text = "stage 0 done · stage 1 submitted";
   else if (!finished) text = `stage 1 · ${done1}/${nRed} tasks done · ${cores}/4 cores busy`;
-  else text = `job 0 succeeded · ${PLAN.finished.toFixed(1)} s · 3 files written`;
+  else text = `job succeeded · ${PLAN.finished.toFixed(1)} s · 3 files written`;
   if (readout.textContent !== text) readout.textContent = text;
   STATE = { t, running, finished, done0, done1, cores };
 }
