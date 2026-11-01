@@ -129,6 +129,46 @@ What this settles:
 
 Not measured: anything about real-size data (the input was a few MB) or a cluster across several machines.
 
+## Experiments for the cases (`check-reuse.py`, `check-splits.py`)
+
+Two small experiments test mechanisms that open questions in the cases depend on. Both ran on the same local 2 × 2 cluster on Spark 4.0.1. They test the mechanism on small synthetic data and say nothing about how large the effect was in the original jobs.
+
+**Re-computation across writes** (`check-reuse.py`). A Python UDF stands in for an expensive parser and counts its own calls. One DataFrame (200 k rows) feeds two writes.
+
+| Run | Parser calls | Time |
+|---|---|---|
+| batch, one write | 1.00 × rows | 3.1 s |
+| batch, two writes, no cache | **2.00 × rows** | 2.9 s |
+| batch, two writes, `persist()` first | 1.00 × rows | 2.3 s |
+| `foreachBatch`, two writes, no cache | **2.00 × rows** | 6.7 s |
+| `foreachBatch`, two writes, `persist()` first | 1.00 × rows | 4.3 s |
+
+- Every write on an uncached DataFrame runs the whole lineage again, the parser included. Inside `foreachBatch` it is the same, and the Spark 4.0.1 guide says so too: each write "can cause the output data to be recomputed (including possible re-reading of the input data)", so cache the batch, write it to every location, then uncache it.
+- The times are too small and noisy to mean anything; only the call counts are evidence.
+
+**Splittable versus non-splittable files** (`check-splits.py`). The input was three 8 MiB text files and one 64 MiB text file, read once plain and once gzipped, with `maxPartitionBytes` 8 MiB.
+
+| Read | Scan tasks | What each task read |
+|---|---|---|
+| text, plain | 13 | 8 MiB pieces; the 64 MiB file became 8 tasks |
+| text, gzip | **4** | one task per file; the large file was one task (23 MiB compressed, 64 MiB of text) |
+| `binaryFile`, gzip | 4 | one row and one task per file |
+
+- A file that cannot be split, such as gzip or a whole file read as one record, is one task however large it is, so the largest file sets the stage's longest task. Its decompressed or parsed size lives in one task's memory, and an executor runs as many such tasks at once as it has cores, all in one heap. That last point is from how executors work; this experiment did not measure memory.
+- The packing model predicts the 13 plain partitions exactly. Each file is a few bytes over 8 MiB, so the tails become tiny pieces packed into 2 extra partitions. The model has no notion of non-splittable files; for the gzip run it would wrongly predict 6.
+- Task durations here are dominated by start-up: the first run's first wave took about 2 s per task against 0.2 s later.
+
+## Related cases
+
+The figure was not built from these cases. These are links where the lab's verified mechanics bear on a case's question; they are not evidence about what happened in those jobs.
+
+- `cases/streaming-file-parser-rework.md`. The hypothesis "repeated evaluation multiplied parser work" has a confirmed mechanism: two writes from one uncached DataFrame ran the parser twice per row, in `foreachBatch` too (`check-reuse.py`). The lab does not separate the historical caching gain from the parser rewrite. For the driver-pressure question, these are the paths that do go through the driver: task status updates, the broadcast stage code, collected results, the write commit, and broadcast-join builds.
+- `cases/productionizing-a-benchmark-driven-streaming-architecture.md`. "One binary file is the unit of parallelism" matches Spark's handling of non-splittable files (`PartitionedFileUtil.splitFiles`, `check-splits.py`). Because the cores of an executor share one heap, large-file tasks that run concurrently on one executor compete for the same memory. Batch sizes that track the master table's file layout fit the packing rule: each file costs an extra `openCostInBytes`.
+- `cases/append-only-cdc-aggregation-pruning.md`. A broadcast join removes a shuffle stage boundary for the large side. With AQE, the map stage runs as its own job (measured above), which is the point where AQE can switch a join to broadcast using real sizes. Pruning also lowers the task count, because the split size is computed from the bytes left after pruning.
+- `cases/repartitioning-large-delta-table.md` and `concepts/layout-follows-readers.md`. A table partition (a directory such as one `ingestion_date`) is not a Spark partition (one task's input). Spark sorts and packs the files of all selected table partitions together (`DataSourceScanExec`, `FilePartition`), so one task can read files from several dates, and one large file can be split across several tasks.
+- `cases/databricks-cost-intelligence-loop.md`. Idle slots are paid capacity: stage 1 here keeps 1 of 4 cores idle. Busy core-seconds over paid core-seconds, from task metrics, is a candidate right-sizing signal.
+- `cases/unified-data-observability-and-lineage.md`. Spark job IDs are not a stable identity: the same write was 1 or 2 jobs depending on AQE, after a schema-read job. That supports keying telemetry on `query_id` and `batch_id`.
+
 ## Checks
 
 - `node build.mjs --audit` ends `audit passed`: 6 cables, 326 solids, 361 items, 0 problems in every check.
@@ -140,6 +180,6 @@ Not measured: anything about real-size data (the input was a few MB) or a cluste
 
 `node build.mjs` writes `spark-job.html`, and `node build.mjs --dark` writes `spark-job-dark.html`; add `--audit` to run the geometry audit. The build needs the figure kit from the anatomy skill, found at `~/.claude/skills/anatomy` or `$ANATOMY_DIR`. Viewing the HTML needs nothing.
 
-Files: `model.mjs` (the job and its schedule), `build.mjs` (geometry and page), `live.js` (the page's loop, packets and controls), `check-spark.py` (the measurement above).
+Files: `model.mjs` (the job and its schedule), `build.mjs` (geometry and page), `live.js` (the page's loop, packets and controls), `check-spark.py` (the measurement above), `check-reuse.py` and `check-splits.py` (the experiments for the cases).
 
-To rerun the measurement, unpack Spark 4.0.1 (`spark-4.0.1-bin-hadoop3`), set `SPARK_HOME`, put `$SPARK_HOME/python` and the bundled py4j zip on `PYTHONPATH`, and run `python3 check-spark.py true` (AQE on) or `false`. It needs Java 17 or 21 and writes to `/tmp/spark/work`.
+To rerun the measurement, unpack Spark 4.0.1 (`spark-4.0.1-bin-hadoop3`), set `SPARK_HOME`, put `$SPARK_HOME/python` and the bundled py4j zip on `PYTHONPATH`, and run `python3 check-spark.py true` (AQE on) or `false`, `python3 check-reuse.py` or `python3 check-splits.py`. They need Java 17 or 21 and write under `/tmp/spark/`.
