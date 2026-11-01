@@ -149,3 +149,4 @@ For large data migrations, do not equate scale with streaming. Look first for a 
 - The amount of historical data for which `ingestion_date` had to be approximated, and the resulting error rate, is not preserved here.
 - The contribution of each individual transformation to total migration cost was not isolated.
 - The full rationale for the business partition columns belongs to a separate architectural discussion. The functional column was added for the table's readers, among them the append-only CDC aggregation job (`cases/append-only-cdc-aggregation-pruning.md`).
+- How many Spark tasks did one `ingestion_date` batch run, and how much of each batch's time was planning (file listing, Delta log) before the first task started? The packing model in `labs/spark-job-anatomy/` gives the task count from file sizes and cores.
