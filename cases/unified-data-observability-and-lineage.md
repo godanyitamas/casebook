@@ -194,6 +194,7 @@ Details: `decisions/batch-telemetry-model.md`.
   - First release computes the statistics with flags (for example "insufficient history") that say whether a value should be used; no alerting on them yet.
   - Production alerting starts with a few crude rules, such as "has this job produced something in the last 2 hours?", while production data accumulates and more jobs are connected.
   - Shadow alerts: Databricks alerts sent only to my email address.
+  - Alerting job (planned): reads the persisted statistics, compares them with expectations, collects every breach and fails once with a summary. It also checks the statistics themselves: if the latest evaluation in the statistics table is older than allowed, that is a breach in the same summary, so a stalled statistics notebook cannot pass as healthy. The allowed age follows from the notebook's schedule (not yet set).
 - **Agent challenge (not verified):**
   - History sufficiency depends on the baseline: same hour of week needs several weeks per slot, a pooled or rolling baseline needs hours. The synthetic lab already found 7 points per slot noisy. Measurable on real data: how much the baseline moves as history grows, and how often each rule fires on healthy data.
   - Store the evidence behind a flag (point count, baseline window, reason codes such as `insufficient_history`, `partial_hour`, `recomputed_after_evaluation`), so the validity threshold can change without recomputation.
@@ -446,7 +447,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 - How much history makes a baseline valid, per baseline type (same hour of week vs pooled or rolling)? Which flags and reason codes are stored?
 - Where does each job's expected cadence come from for the crude "produced something" rule (lookup table, inferred maximum gap, exclusion)? Does "produced" mean a completed batch or non-zero input?
 - What key does the threshold lookup table use, and does it survive job renames?
-- *(Answered 2026-11-17: statistics persisted to Delta; a separate alerting job collects all breaches and fails once with a summary.)* How is a breach signalled? Still open: what tells us the statistics are still being evaluated?
+- *(Answered 2026-11-17: statistics persisted to Delta; a separate alerting job collects all breaches and fails once with a summary.)* How is a breach signalled? *(Planned 2026-11-17: a staleness check on the latest statistics evaluation in the alerting job.)* What tells us the statistics are still being evaluated? Open: the allowed age.
 - What firing rate in shadow alerts is good enough to activate a rule?
 
 **Files and platform**
