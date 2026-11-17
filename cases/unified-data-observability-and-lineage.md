@@ -171,6 +171,21 @@ Details: `decisions/batch-telemetry-model.md`.
 - **Measured:** a duplicate-key check on raw found no duplicate rows (scope not recorded). Without `distinct`, a future duplicate would be counted twice, so the check remains the guard. It does not verify replay (H2/H3) unless the checked period included restarts or replays.
 - **Open:** whether the re-read skips files on the clustering columns (check the scan in the Spark UI); for `process_metrics_per_hour`, the keys must be the affected (`job_name`, `process_hour`) pairs, re-reading every raw row of those hours.
 
+### 2026-11-17: metrics jobs on QA, end-to-end freshness, statistics notebook
+
+- **Deployed (QA):** the two aggregation jobs populate `process_metrics_per_batch` and `process_metrics_per_hour`; `availableNow` on a schedule, each run resuming from its checkpoint.
+- **Observed (QA):** a delete and an update on `process_telemetry` did not stop either stream (`skipChangeCommits`). Not checked: whether the affected batches and hours were recomputed afterwards.
+- **Not yet exercised on QA:** late, replayed or split raw commits (H2/H3, H12); file skipping in the re-read.
+- **Built (QA): end-to-end freshness module** writing `process_end_to_end_freshness`. It streams `process_telemetry`, walks the ancestry of each new entry and writes one row per (target batch, origin batch); a Gold batch that read two Silver batches gives two rows. Target time = target `batch_end_ts`, the last known completion of any process. Origin time = first non-null of file functional timestamp, file modification timestamp, message timestamp, origin batch start; the column used is recorded. The module does not report about itself.
+- **My reasoning:** missing ancestor telemetry when a target entry is processed is very unlikely. Producers write telemetry last, but Kafka Bronze jobs are always-on `processingTime`, and the gap is small against Silver processing time. A stalled pipeline (no new rows) is caught by comparing now with the latest record.
+- **Agent challenge (not verified):**
+  - A skipped change commit emits no keys. Its batches and hours are recomputed only when a later raw row touches the same key, so after an update the metrics may keep the old values. The stream surviving the update shows availability, not correctness.
+  - Arrival order is probably not the main source of incomplete walks. Ancestry can also stop at ad-hoc deleted raw rows (see 2026-10-29), retention, legacy upstream names (R10) or null upstream identity. Counting targets with unresolved references would measure this instead of assuming it.
+  - The origin timestamp has a different meaning per row, which principle 2 avoids. The recorded column keeps that visible, but an aggregate over rows with different origin columns mixes populations: functional time includes business lag (meaning unconfirmed, R6), while batch start understates age. Also open: which value is used when an origin batch holds many files or messages (min, max).
+  - Per-target monitoring needs an aggregate over the (target, origin) rows, presumably the oldest origin; converging paths must not count one origin twice.
+  - Now minus latest record catches staleness only for jobs that have rows, and cannot tell stuck from no new input (see Freshness).
+- **Draft (QA, few jobs):** a notebook computing MAD, EWMA and basic freshness per job; notes to follow. The metrics tables, `process_end_to_end_freshness` and these statistics are meant as the base for monitoring jobs that fail and alert when thresholds are broken.
+
 ---
 
 ## Evidence
