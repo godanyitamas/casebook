@@ -16,14 +16,14 @@ topics:
 
 # Designing unified processing telemetry across files, message streams, and Delta
 
-> **Handoff (2026-10-23)**
+> **Handoff (2026-11-17)**
 >
-> - **Settled:** three grains (raw `process_telemetry`, flat `process_metrics_per_batch` per batch, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Persisted `process_metrics_per_hour` from raw for trends, `process_metrics_per_batch` also persisted (2026-10-25). Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
-> - **Local code (uncommitted, not deployed):** Core constants/schema/writer compile, seven focused tests passed; the adapted Kafka builder's extracted telemetry method passed seven Spark tests. The timestamp-type grouping and column are now removed locally (2026-10-23). The `-1` validity filter and the 1969 conversion test are deliberately deferred as low priority; fallback guard proposed below.
+> - **Settled:** four grains (raw `process_telemetry`, flat `process_metrics_per_batch`, `process_metrics_per_hour` from raw, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
+> - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); a draft statistics notebook (MAD, EWMA, basic freshness) on a few jobs.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
-> - **Not verified:** identity lifetime (H1), replay (H2/H3), deployed round-trip, full module build, facts build, commit-split completeness, lineage traversal, cross-day stability, performance.
-> - **Scope clarified (2026-10-23):** engineering delivers metrics; the customer's business side owns alert policy. Monitored families: volume per time window and message age.
-> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; first `process_metrics_per_hour` build; H1 and replay tests.
+> - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance, false-alarm rate of baseline rules (H17).
+> - **Scope revised (2026-11-17):** engineering owns default per-job rules and the statistical validity parameters; the business side sets exact thresholds for critical sources in a lookup table, which takes precedence. Monitored families: volume per time window and message age.
+> - **Next:** notebook notes; how a breach is signalled (results table vs failing job); shadow alerts to my email only; first crude production alert ("produced something in the last N hours"); investigate the slow population; H1 and replay tests.
 
 ## Problem
 
@@ -180,11 +180,26 @@ Details: `decisions/batch-telemetry-model.md`.
 - **My reasoning:** missing ancestor telemetry when a target entry is processed is very unlikely. Producers write telemetry last, but Kafka Bronze jobs are always-on `processingTime`, and the gap is small against Silver processing time. A stalled pipeline (no new rows) is caught by comparing now with the latest record.
 - **Agent challenge (not verified):**
   - A skipped change commit emits no keys. Its batches and hours are recomputed only when a later raw row touches the same key, so after an update the metrics may keep the old values. The stream surviving the update shows availability, not correctness.
+    - **My answer:** known and accepted. The QA delete and update were a correction made to test the end-to-end freshness job; keeping the stream running was the only intent. Production should have no updates (an assumption, not enforced); deletes for re-ingestion are accepted (2026-10-29).
   - Arrival order is probably not the main source of incomplete walks. Ancestry can also stop at ad-hoc deleted raw rows (see 2026-10-29), retention, legacy upstream names (R10) or null upstream identity. Counting targets with unresolved references would measure this instead of assuming it.
   - The origin timestamp has a different meaning per row, which principle 2 avoids. The recorded column keeps that visible, but an aggregate over rows with different origin columns mixes populations: functional time includes business lag (meaning unconfirmed, R6), while batch start understates age. Also open: which value is used when an origin batch holds many files or messages (min, max).
+    - **My answer:** origin time is the earliest meaningful timestamp available for the source type, in priority order (file functional, file modification, message), with origin batch start as the fallback; within an origin batch it is the minimum. A job never reports file and message timestamps together, so at most one of those groups is filled. The business side may later prefer origin batch start.
+    - **Agent note:** functional and modification timestamps can both be present; functional wins even when modification is earlier, so "minimum" holds within the chosen column.
   - Per-target monitoring needs an aggregate over the (target, origin) rows, presumably the oldest origin; converging paths must not count one origin twice.
   - Now minus latest record catches staleness only for jobs that have rows, and cannot tell stuck from no new input (see Freshness).
 - **Draft (QA, few jobs):** a notebook computing MAD, EWMA and basic freshness per job; notes to follow. The metrics tables, `process_end_to_end_freshness` and these statistics are meant as the base for monitoring jobs that fail and alert when thresholds are broken.
+- **Monitoring direction (my decisions, under construction):**
+  - About 200 jobs behave differently, so general rules apply to every job against its own historical baseline. A lookup table lets the business side set exact thresholds and rules for critical sources of their choice; a lookup row takes precedence over the general rule.
+  - How much history (days, batches, hours) makes a baseline statistically valid is an engineering parameter, guided by accuracy, not by the business.
+  - First release computes the statistics with flags (for example "insufficient history") that say whether a value should be used; no alerting on them yet.
+  - Production alerting starts with a few crude rules, such as "has this job produced something in the last 2 hours?", while production data accumulates and more jobs are connected.
+  - Shadow alerts: Databricks alerts sent only to my email address.
+- **Agent challenge (not verified):**
+  - History sufficiency depends on the baseline: same hour of week needs several weeks per slot, a pooled or rolling baseline needs hours. The synthetic lab already found 7 points per slot noisy. Measurable on real data: how much the baseline moves as history grows, and how often each rule fires on healthy data.
+  - Store the evidence behind a flag (point count, baseline window, reason codes such as `insufficient_history`, `partial_hour`, `recomputed_after_evaluation`), so the validity threshold can change without recomputation.
+  - The crude rule needs an expected cadence per job; daily or irregular jobs break a fixed 2 h window. "Produced" needs a definition: a completed batch, or non-zero input.
+  - The lookup table should be keyed on a stable identity (`job_name` vs `job_id`, R5), or a renamed job silently loses its thresholds.
+  - A failing monitoring job as the alert signal mixes four things: a breach and a crash in the monitoring code look the same; raising on the first breach skips the remaining checks; a green run can mean nothing was evaluated; platform retries re-run a breach. Alternative: write one row per check and target to a results table (value, threshold, flags, status, evaluation time), fail only on own errors, alert from the table (shadow alerts become SQL alerts on it), and check that evaluations are recent.
 
 ---
 
@@ -303,6 +318,8 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
   - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
 - **Granularity:** engineering stores hourly (`process_metrics_per_hour`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
 
+**Revision (2026-11-17):** engineering owns default per-job baseline rules and the parameters that decide whether a statistic is valid (history length, flags); the business side sets exact thresholds and rules for critical sources in a lookup table, which takes precedence over the defaults. Production alerting starts with crude rules. See the 2026-11-17 log entry.
+
 **Agent proposals, not decided:**
 
 - *(Decided 2026-10-25: hourly base.)* Histograms and sums merge exactly at any window, so the facts support both granularities; an hourly base with daily rollups is a reasonable default. For a 2–5 min expectation, daily works as a trend, not for reacting. The deciding question for the business side: how fast must someone notice a problem?
@@ -390,6 +407,8 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 | H14 | Envelope invariants, uniqueness and population checks give one correct facts row per batch | 3, 6 | Open |
 | H15 | Version-1 histograms answer monitoring queries with acceptable error and overhead across days | 3 | One day measured; stability, performance open; tolerance follows from the business side's thresholds |
 | H16 | Event Hubs via Kafka endpoint reports its configured timestamp type | 3 | Open; now only relevant to onboarding checks |
+| H17 | General per-job baseline rules with validity flags give an acceptable false-alarm rate across ~200 jobs on real data | 8 | Open; shadow alerts planned |
+| H18 | End-to-end freshness rows resolve every origin; targets with unresolved references are rare and countable | 6 | Open; arrival-order gaps judged unlikely, not measured |
 
 **POC steps:** 0 acceptance queries and synthetic ground truth (two-query job, recent process reading old data); 1 identity; 2 idempotency and replay (telemetry only, no data-write migration); 3 stamps, populations, storage, histograms (second day, `-1`, size tail near 1 MB, overhead); 4 multi-source/multi-output; 5 failure and replay; 6 facts and ancestry (histogram merges, commit split, converging paths, unresolved references); 7 migration checks and legacy reconciliation; 8 evaluate and write up.
 
@@ -419,6 +438,14 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 - How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
 - How does the archiving job read the table? What does the legacy 65 GB consist of?
+
+**Monitoring and alerting (2026-11-17)**
+
+- How much history makes a baseline valid, per baseline type (same hour of week vs pooled or rolling)? Which flags and reason codes are stored?
+- Where does each job's expected cadence come from for the crude "produced something" rule (lookup table, inferred maximum gap, exclusion)? Does "produced" mean a completed batch or non-zero input?
+- What key does the threshold lookup table use, and does it survive job renames?
+- How is a breach signalled: a failing monitoring job, or a results table with alerts on it? What tells us the monitoring itself is still evaluating?
+- What firing rate in shadow alerts is good enough to activate a rule?
 
 **Files and platform**
 
