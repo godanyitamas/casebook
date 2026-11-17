@@ -23,7 +23,7 @@ topics:
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance, false-alarm rate of baseline rules (H17).
 > - **Scope revised (2026-11-17):** engineering owns default per-job rules and the statistical validity parameters; the business side sets exact thresholds for critical sources in a lookup table, which takes precedence. Monitored families: volume per time window and message age.
-> - **Next:** notebook notes; how a breach is signalled (results table vs failing job); shadow alerts to my email only; first crude production alert ("produced something in the last N hours"); investigate the slow population; H1 and replay tests.
+> - **Next:** notebook notes; staleness check on the statistics in the alerting job; shadow alerts to my email only; first crude production alert ("produced something in the last N hours"); investigate the slow population; H1 and replay tests.
 
 ## Problem
 
@@ -200,6 +200,8 @@ Details: `decisions/batch-telemetry-model.md`.
   - The crude rule needs an expected cadence per job; daily or irregular jobs break a fixed 2 h window. "Produced" needs a definition: a completed batch, or non-zero input.
   - The lookup table should be keyed on a stable identity (`job_name` vs `job_id`, R5), or a renamed job silently loses its thresholds.
   - A failing monitoring job as the alert signal mixes four things: a breach and a crash in the monitoring code look the same; raising on the first breach skips the remaining checks; a green run can mean nothing was evaluated; platform retries re-run a breach. Alternative: write one row per check and target to a results table (value, threshold, flags, status, evaluation time), fail only on own errors, alert from the table (shadow alerts become SQL alerts on it), and check that evaluations are recent.
+    - **My answer:** the statistics notebook persists its results in a Delta table; a separate alerting job compares them with expectations. It collects every breach, raises one exception with a summary at the end, and the failure alert brings people to read it. Collecting before failing is what keeps one job's breach from hiding another's. An extra job only to crash is accepted; the statistics must be persisted anyway.
+    - **Agent note (not verified):** remaining gaps: the alerting job should also fail when the statistics are stale (last evaluation too old), otherwise a stalled notebook makes it compare old values and pass; disable retries on the alerting job; breaches exist only in run history unless also written to a table, which H17 needs for counting firings.
 
 ---
 
@@ -444,7 +446,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 - How much history makes a baseline valid, per baseline type (same hour of week vs pooled or rolling)? Which flags and reason codes are stored?
 - Where does each job's expected cadence come from for the crude "produced something" rule (lookup table, inferred maximum gap, exclusion)? Does "produced" mean a completed batch or non-zero input?
 - What key does the threshold lookup table use, and does it survive job renames?
-- How is a breach signalled: a failing monitoring job, or a results table with alerts on it? What tells us the monitoring itself is still evaluating?
+- *(Answered 2026-11-17: statistics persisted to Delta; a separate alerting job collects all breaches and fails once with a summary.)* How is a breach signalled? Still open: what tells us the statistics are still being evaluated?
 - What firing rate in shadow alerts is good enough to activate a rule?
 
 **Files and platform**
