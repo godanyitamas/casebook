@@ -16,14 +16,15 @@ topics:
 
 # Designing unified processing telemetry across files, message streams, and Delta
 
-> **Handoff (2026-11-17)**
+> **Handoff (2026-11-18)**
 >
 > - **Settled:** four grains (raw `process_telemetry`, flat `process_metrics_per_batch`, `process_metrics_per_hour` from raw, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
 > - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); a draft statistics notebook (MAD, EWMA, basic freshness) on a few jobs.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance, false-alarm rate of baseline rules (H17).
 > - **Scope revised (2026-11-17):** engineering owns default per-job rules and the statistical validity parameters; the business side sets exact thresholds for critical sources in a lookup table, which takes precedence. Monitored families: volume per time window and message age.
-> - **Next:** notebook notes; staleness check on the statistics in the alerting job; shadow alerts to my email only; first crude production alert ("produced something in the last N hours"); investigate the slow population; H1 and replay tests.
+> - **Release (2026-11-18):** first production release on 24 November (a handful of jobs on the new runtime reporting to `process_telemetry`; monitoring jobs deployed; alerting only on time since last record), then weekly releases; Kafka alerting proposed next. Legacy `processed_files` rows to be imported once as ledger evidence.
+> - **Next:** Friday client call on trends and alerting (ask for a freshness threshold for critical Kafka flows); define and name the two end-to-end values; quiet-topic handling for the basic alert; notebook notes; staleness check on the statistics in the alerting job; shadow alerts to my email only; first crude production alert ("produced something in the last N hours"); investigate the slow population; H1 and replay tests.
 
 ## Problem
 
@@ -203,6 +204,28 @@ Details: `decisions/batch-telemetry-model.md`.
   - A failing monitoring job as the alert signal mixes four things: a breach and a crash in the monitoring code look the same; raising on the first breach skips the remaining checks; a green run can mean nothing was evaluated; platform retries re-run a breach. Alternative: write one row per check and target to a results table (value, threshold, flags, status, evaluation time), fail only on own errors, alert from the table (shadow alerts become SQL alerts on it), and check that evaluations are recent.
     - **My answer:** the statistics notebook persists its results in a Delta table; a separate alerting job compares them with expectations. It collects every breach, raises one exception with a summary at the end, and the failure alert brings people to read it. Collecting before failing is what keeps one job's breach from hiding another's. An extra job only to crash is accepted; the statistics must be persisted anyway.
     - **Agent note (not verified):** remaining gaps: the alerting job should also fail when the statistics are stale (last evaluation too old), otherwise a stalled notebook makes it compare old values and pass; disable retries on the alerting job; breaches exist only in run history unless also written to a table, which H17 needs for counting firings.
+
+### 2026-11-18: presentations, release plan, ledger import
+
+- **Presented:** to the client, the monitoring layout: current state (only file jobs report, several disconnected monitoring solutions, no connection to platform system tables, legacy reporting inconsistent and physically fragmented), how everything connects to `process_telemetry`, the metrics jobs, end-to-end freshness, and that the existing operational dashboards could be reworked on the new tables. Demo: end-to-end freshness tracing a Kafka pipeline from source to Gold. Again to the client with the project manager: what gets deployed, what it means for business and developers, rollout and rollback. At sprint review: a short overview of the release bundling the runtime migration with the monitoring rollout; new datasources and legacy migrations must target the new runtime and reporting afterwards; a migration guide promised later.
+- **Client questions (two lines):**
+  - Transition: how do downstream consumers move from `processed_files` to `process_telemetry`, and how is the history in `processed_files` kept?
+  - Kafka flows (the most visible): what can be seen after this release, what will be monitored; a request for a demo and examples.
+- **Answered / decided (transition):** dual reporting → data quality check → downstream consumers migrated one by one. Each consumer is investigated once every FILE upstream job reports to `process_telemetry`; known consumers come from platform lineage. The rework of the operational dashboards is a separate thread with their maintainer and the client's internal meeting.
+- **Clarified: the table is also a ledger.** `processed_files`, and now `process_telemetry`, records which files have been processed; some jobs check it as a guarantee that a file is done, and reprocessing deletes the rows. Lookups use the file path and sometimes a legacy, arbitrary `Datasource` column, which `job_id` is expected to replace.
+- **Decided (history):** legacy rows are imported into `process_telemetry` once, as evidence that the files were ingested: null `query_id`/`batch_id`, `job_id` and `job_name` filled, plus a marker column. A job being recreated or renamed (new `job_id`, empty ledger) is rare and an accepted risk; a sturdier key (for example `source_id` + `job_name`) can be investigated later.
+- **Release plan:** 24 November: a handful of jobs move to the new runtime and report to `process_telemetry`; the monitoring jobs are deployed; production alerting covers only time since the last `process_telemetry` record per job, while the statistics gather history. Weekly releases afterwards, building step by step; Kafka pipeline alerting is proposed for the next release, as the most important business item. A trends and alerting call with the client is planned for Friday.
+- **Planned:** a platform dashboard as the first stop for ad-hoc investigation of a job: metrics and trends joined with system tables (cost, cluster metrics), with releases (number and date, recorded manually) overlaid to look for correlations. Partly built; to be connected to the new metrics tables.
+- **Under consideration (not decided):** end-to-end freshness as two values: target `batch_end_ts` − origin batch start, and target `batch_end_ts` − earliest inferable source timestamp, so that a pipeline-speed expectation can be stated apart from source delay. Definition and naming open.
+- **Agent challenge (not verified):**
+  - Origin batch start does not separate source from pipeline. The difference between the two values contains producer delay and transport, but also consumer backlog and trigger interval, which the pipeline owns. A rule on the first value can hold while Bronze falls behind; consumer backlog is one of the competing explanations for the slow population (see Evidence). A backlog signal (broker end offsets vs consumed offsets, parked) would split it.
+  - Choose the metric for what it measures, not because the rule holds more easily; observed slowness must not relax the expectation (Freshness).
+  - End-to-end freshness is visible only for pipelines whose every hop reports, producers before consumers. Whether the first jobs form a complete Kafka chain decides what the Kafka stakeholders see after the first release.
+  - The demo number is a worst case (minimum message timestamp, producer-supplied CreateTime), not typical age; "fresh enough" needs a threshold the business side has not set.
+  - Quiet topics: a `processingTime` query without new data runs no micro-batch (stateless queries; to verify), so no telemetry row is written and "time since last record" fires. Per-job thresholds or known quiet hours are needed.
+  - Kafka alerting one week after the first release has too little history for baseline rules; it must be threshold-based (needs the business threshold) or crude.
+  - The release overlay cannot separate the runtime migration from the telemetry overhead (H4) in a bundled release. System tables do give a pre-release baseline for cost and run duration. A small release table is sturdier than values typed into the dashboard.
+  - Legacy import: the aggregation streams and the end-to-end freshness module will pick up the imported rows (filter the marker or accept partial historical metrics, decided beforehand); import only rows from before each job's switch, or deduplicate by file, to avoid two ledger rows per file during dual reporting; `Datasource` → `job_id` needs a mapping, and values shared by several jobs cannot be assigned.
 
 ---
 
@@ -449,6 +472,15 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 - What key does the threshold lookup table use, and does it survive job renames?
 - *(Answered 2026-11-17: statistics persisted to Delta; a separate alerting job collects all breaches and fails once with a summary.)* How is a breach signalled? *(Planned 2026-11-17: a staleness check on the latest statistics evaluation in the alerting job.)* What tells us the statistics are still being evaluated? Open: the allowed age.
 - What firing rate in shadow alerts is good enough to activate a rule?
+
+**Release and stakeholders (2026-11-18)**
+
+- How are the two end-to-end values defined and named, and how is consumer backlog kept from being counted as source delay?
+- What freshness threshold does the business side set for critical Kafka flows, and is it in time for the next release?
+- Do the first jobs form a complete Kafka chain, so that end-to-end freshness is visible after the first release?
+- How does the basic alert treat quiet topics that produce no micro-batches?
+- Where are releases recorded for the dashboard overlay (manual values vs a small table)?
+- Legacy import: `Datasource` → `job_id` mapping, cutoff per job, and whether the streaming jobs filter imported rows.
 
 **Files and platform**
 
