@@ -19,7 +19,7 @@ topics:
 > **Handoff (2026-11-18)**
 >
 > - **Settled:** four grains (raw `process_telemetry`, flat `process_metrics_per_batch`, `process_metrics_per_hour` from raw, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
-> - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); a draft statistics notebook (MAD, EWMA, basic freshness) on a few jobs.
+> - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); a draft statistics notebook (MAD, EWMA, basic freshness) on a few jobs. Since 2026-11-20: a scheduled monitoring job runs both metrics tasks and end-to-end freshness before a scoring notebook; a separate alerting notebook evaluates rules.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance, false-alarm rate of baseline rules (H17).
 > - **Scope revised (2026-11-17):** engineering owns default per-job rules and the statistical validity parameters; the business side sets exact thresholds for critical sources in a lookup table, which takes precedence. Monitored families: volume per time window and message age.
@@ -236,6 +236,12 @@ Details: `decisions/batch-telemetry-model.md`.
 - **Validation direction:** accumulating production history makes evaluation possible; it does not by itself establish validity. I still need to demonstrate how the reworked monitoring behaves to the business side. We will define rules step by step and judge readiness for activation using both shadow-alert results and known examples, aiming to avoid unwanted false alarms.
 - **Open implementation questions (agent review, not verified in runtime):** an alert run with no matching observations can pass without checking whether expected jobs were evaluated or statistics are stale. A disabled specific rule suppresses a matching generic rule because specificity is selected first; confirm whether this is the intended exemption. The scoring notebook replays history for EWMA but persists only the target hour, so a later correction to an earlier hour does not automatically update its persisted score. Test these behaviors before activating rules.
 - **Freshness caution:** source-to-target and origin-start-to-target ages are separately maximized across origins in the alert notebook; the two maxima can describe different origins. Source timestamp meaning and lineage coverage remain open.
+- **My answers (2026-11-20, exploratory):**
+  - Kafka and Delta sources had only basic crash detection before, which also covers new jobs such as the monitoring job. The first release therefore changes nothing for them; rules the business side asks for are added after 25 November, knowing what the data shows by then.
+  - The first release shows the customer what the monitoring looks like and what it can do; rules are then inserted into the lookup table one at a time, using the weekly releases to adjust as the migration goes on.
+  - The log transform is `log1p`, so zero observations are defined.
+  - Rules are scoped by job or source type on any measure, not only end-to-end freshness. Source-to-target age is expected to be specific to a few jobs; origin-start-to-target age per source type. Examples: a tighter rule for Kafka Bronze jobs later; a generic activity rule for file jobs ("a row in `process_telemetry` in the past x hours").
+- **Agent note (not verified):** a generic origin-start-to-target rule cannot see Bronze falling behind (consumer backlog sits before origin start), so it should not be the only generic freshness check. File deliveries can be daily or irregular, so the generic activity window x likely depends on the source or job (expected cadence, see Open questions).
 
 ---
 
@@ -354,7 +360,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
   - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
 - **Granularity:** engineering stores hourly (`process_metrics_per_hour`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
 
-**Revision (2026-11-17):** engineering owns default per-job baseline rules and the parameters that decide whether a statistic is valid (history length, flags); the business side sets exact thresholds and rules for critical sources in a lookup table, which takes precedence over the defaults. Production alerting starts with crude rules. See the 2026-11-17 log entry.
+**Revision (2026-11-17):** engineering owns default per-job baseline rules and the parameters that decide whether a statistic is valid (history length, flags); the business side sets exact thresholds and rules for critical sources in a lookup table, which takes precedence over the defaults. Production alerting starts with crude rules. See the 2026-11-17 log entry. *(First release: no active rules; rules added one at a time afterwards, see 2026-11-20.)*
 
 **Agent proposals, not decided:**
 
@@ -480,6 +486,8 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 - How will score- and trend-based rules use baseline-validity flags, and how will missing or stale evaluations be detected before alerting is activated?
 - When facts for an earlier hour change, should persisted scores be recomputed, and how will that be detected?
 - Does a disabled specific rule intentionally exempt its scope from a generic rule?
+- Is the 28-day baseline pooled across hours, or per hour of day / hour of week? Pooling hides seasonality; per-slot baselines leave few points per slot (4 per hour-of-week slot in 28 days).
+- Are the sample count and history span persisted next to each score, or only the resulting baseline status?
 - How much history makes a baseline valid, per baseline type (same hour of week vs pooled or rolling)? Which flags and reason codes are stored?
 - Where does each job's expected cadence come from for the crude "produced something" rule (lookup table, inferred maximum gap, exclusion)? Does "produced" mean a completed batch or non-zero input?
 - What key does the threshold lookup table use, and does it survive job renames?
@@ -489,7 +497,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Release and stakeholders (2026-11-18)**
 
 - How are the two end-to-end values defined and named, and how is consumer backlog kept from being counted as source delay?
-- What freshness threshold does the business side set for critical Kafka flows, and is it in time for the next release?
+- What freshness threshold does the business side set for critical Kafka flows?
 - Do the first jobs form a complete Kafka chain, so that end-to-end freshness is visible after the first release?
 - How does the basic alert treat quiet topics that produce no micro-batches?
 - Where are releases recorded for the dashboard overlay (manual values vs a small table)?
