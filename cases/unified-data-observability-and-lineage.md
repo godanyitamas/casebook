@@ -23,8 +23,8 @@ topics:
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance, false-alarm rate of baseline rules (H17).
 > - **Scope revised (2026-11-17):** engineering owns default per-job rules and the statistical validity parameters; the business side sets exact thresholds for critical sources in a lookup table, which takes precedence. Monitored families: volume per time window and message age.
-> - **Release (2026-11-18):** first production release on 24 November (a handful of jobs on the new runtime reporting to `process_telemetry`; monitoring jobs deployed; alerting only on time since last record), then weekly releases; Kafka alerting proposed next. Legacy `processed_files` rows to be imported once as ledger evidence.
-> - **Next:** Friday client call on trends and alerting (ask for a freshness threshold for critical Kafka flows); define and name the two end-to-end values; quiet-topic handling for the basic alert; notebook notes; staleness check on the statistics in the alerting job; shadow alerts to my email only; first crude production alert ("produced something in the last N hours"); investigate the slow population; H1 and replay tests.
+> - **Release update (2026-11-20):** first production release planned for 25 November, bundled with the 18 LTS runtime migration; weekly releases follow. Monitoring collects history, but the deployed alerting job will not run and no rules will be active. Legacy `processed_files` rows are planned for a one-time import as ledger evidence.
+> - **Next:** accumulate production history; demonstrate the monitoring to the business side; define rules together and evaluate them against shadow alerts and known examples before activation; clarify the two end-to-end values, quiet-topic handling and statistics staleness; investigate the slow population; H1 and replay tests.
 
 ## Problem
 
@@ -226,6 +226,16 @@ Details: `decisions/batch-telemetry-model.md`.
   - Kafka alerting one week after the first release has too little history for baseline rules; it must be threshold-based (needs the business threshold) or crude.
   - The release overlay cannot separate the runtime migration from the telemetry overhead (H4) in a bundled release. System tables do give a pre-release baseline for cost and run duration. A small release table is sturdier than values typed into the dashboard.
   - Legacy import: the aggregation streams and the end-to-end freshness module will pick up the imported rows (filter the marker or accept partial historical metrics, decided beforehand); import only rows from before each job's switch, or deduplicate by file, to avoid two ledger rows per file during dual reporting; `Datasource` → `job_id` needs a mapping, and values shared by several jobs cannot be assigned.
+
+### 2026-11-20: scoring, alert rules and revised release
+
+- **Implemented:** a scheduled monitoring job runs the batch metrics, hourly metrics and end-to-end freshness tasks before the scoring task. The scoring notebook persists results for the evaluated hour.
+- **Scoring implementation:** a 28-day rolling baseline uses the median and MAD of log-transformed observations; sample count and history span determine a provisional baseline status. An exploratory EWMA is reconstructed over seven days. Hourly scoring covers input volume and file/message size measures; batch scoring covers processing duration. These choices and validity thresholds still need evaluation on production data.
+- **Alerting implementation:** a separate notebook matches generic and job- or source-type-specific rules, selects the most specific match, evaluates raw measurements or end-to-end source-to-target age, and collects findings before failing once. Score- or trend-based generic alerts are intended later; the current evaluator does not use modified z-scores or EWMA.
+- **Release revision:** the first production release is planned for **25 November**, bundled with the 18 LTS migration, followed by weekly releases. The monitoring job will collect history; the alerting job will be deployed but will not run, and no rules will be active. This supersedes the 24 November and initial crude-alert plan above.
+- **Validation direction:** accumulating production history makes evaluation possible; it does not by itself establish validity. I still need to demonstrate how the reworked monitoring behaves to the business side. We will define rules step by step and judge readiness for activation using both shadow-alert results and known examples, aiming to avoid unwanted false alarms.
+- **Open implementation questions (agent review, not verified in runtime):** an alert run with no matching observations can pass without checking whether expected jobs were evaluated or statistics are stale. A disabled specific rule suppresses a matching generic rule because specificity is selected first; confirm whether this is the intended exemption. The scoring notebook replays history for EWMA but persists only the target hour, so a later correction to an earlier hour does not automatically update its persisted score. Test these behaviors before activating rules.
+- **Freshness caution:** source-to-target and origin-start-to-target ages are separately maximized across origins in the alert notebook; the two maxima can describe different origins. Source timestamp meaning and lineage coverage remain open.
 
 ---
 
@@ -467,6 +477,9 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 
 **Monitoring and alerting (2026-11-17)**
 
+- How will score- and trend-based rules use baseline-validity flags, and how will missing or stale evaluations be detected before alerting is activated?
+- When facts for an earlier hour change, should persisted scores be recomputed, and how will that be detected?
+- Does a disabled specific rule intentionally exempt its scope from a generic rule?
 - How much history makes a baseline valid, per baseline type (same hour of week vs pooled or rolling)? Which flags and reason codes are stored?
 - Where does each job's expected cadence come from for the crude "produced something" rule (lookup table, inferred maximum gap, exclusion)? Does "produced" mean a completed batch or non-zero input?
 - What key does the threshold lookup table use, and does it survive job renames?
