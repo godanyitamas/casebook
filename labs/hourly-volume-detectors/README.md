@@ -44,6 +44,8 @@ Hours to the first false alarm on clean, independent normal noise (z / EWMA / CU
 
 In the scenario with 2 weeks, the pooled scale gives 3 EWMA alarms and 1 CUSUM signal in the 65 quiet hours; with per-hour MADs, 16 / 29 / 14. With little history, an early alarm in the dip cannot be told apart from noise.
 
+**Real implementation (2026-11-20):** the scoring notebook uses a 28-day rolling median/MAD of `log1p` observations, with EWMA exploratory (case log, 2026-11-20). Once production history exists, these results are hypotheses to test on `process_metrics_per_hour`: pooled versus per-slot scale, and whether a sustained small shift is missed without EWMA or CUSUM.
+
 ## What this does not show
 
 Nothing here is measured on the real tables. The noise is exactly 6 % in every hour, which is what the pooled scale assumes, so the comparison favours pooled by construction; low-volume hours in real data are relatively noisier. Real hourly volume is also not independent: consecutive hours are correlated (an outage followed by a catch-up), counts are discrete, sparse sources can have a MAD of 0, and holidays break a same-hour-of-week baseline. Each of these changes the false-alarm numbers, and false alarms multiply with the number of monitored series.

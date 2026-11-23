@@ -334,3 +334,7 @@ The strongest signals come from combining platform data with knowledge of what t
 - Which parts must remain workload-specific?
 - Can the dashboard become part of a recurring engineering review or another normal team workflow without becoming passive reporting?
 - Can slot utilisation (busy core-seconds over paid core-seconds, from task metrics) flag over-sized clusters? Stage 1 of `labs/spark-job-anatomy/` keeps 1 of 4 cores idle.
+
+## Connections
+
+- `cases/unified-data-observability-and-lineage.md`: batch-level telemetry (`job_id`, `job_run_id`, per-batch and hourly metrics) joined with platform system tables; a planned dashboard combines those metrics with cost and cluster metrics and a release overlay. Shared caveat: run cost is not per-batch cost without an explicit allocation rule.

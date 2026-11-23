@@ -23,7 +23,7 @@ Correctness comes from making each unit of work, its identity and its completion
 - **`cases/productionizing-a-benchmark-driven-streaming-architecture.md`:** the legacy system got synchronization implicitly from one job flow. Splitting Silver into independent streams removed that, so per-file progress tables and a completion table became an explicit fan-out/fan-in barrier. The barrier is part of the correctness contract, not only observability.
 - **`cases/repartitioning-large-delta-table.md`:** a long-running stream over the whole table failed. One `ingestion_date` → one bounded batch → one completion record gave restartability, rollback per date and visible progress.
 - **`cases/late-arriving-data-with-bounded-retry-state.md`:** a fixed 24-hour delay was a timing assumption, not a completeness guarantee. Records that cannot join yet became explicit retry state with an expiry.
-- **`cases/unified-data-observability-and-lineage.md`:** a hand-written name + date `txnAppId` mixed unit and continuity identity, which can skip or duplicate writes. Identity now comes from Spark (`query_id`, `batch_id`), producers stamp it on write and consumers record what they read.
+- **`cases/unified-data-observability-and-lineage.md`:** a hand-written name + date `txnAppId` mixed unit and continuity identity, which can skip or duplicate writes. Identity now comes from Spark (`query_id`, `batch_id`), producers stamp it on write and consumers record what they read. Later (2026-10-29, 2026-11-18): `process_telemetry` is also the recorded completion state for files; other jobs check it as a guarantee, deleting a row is how a file gets reprocessed, and legacy history is imported once so that completion state stays continuous across the migration.
 
 ## How to use it
 
