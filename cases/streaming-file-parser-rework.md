@@ -89,4 +89,4 @@ When large inputs cause resource pressure, inspect both per-input materializatio
 - What driver-side operation or data flow caused its CPU, heap, and GC pressure?
 - Can the parser-only contribution be separated from the caching/reuse change using available stage or batch metrics?
 - Which additional malformed-input, boundary, or retry cases should be tested?
-- Did the old job write several outputs from one uncached batch DataFrame? The old code would settle the repeated-evaluation hypothesis directly.
+- *(Answered 2026-11-23: yes, the old job wrote several outputs from uncached data. With the mechanism measured in `labs/spark-job-anatomy/` (each write builds a new plan and recomputes; two writes from one uncached DataFrame ran the parser twice per row), repeated parsing is established. Its share of the cost remains the open question above.)* Did the old job write several outputs from one uncached batch DataFrame? The old code would settle the repeated-evaluation hypothesis directly.

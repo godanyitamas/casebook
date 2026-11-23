@@ -9,7 +9,7 @@ topics:
   - delta-lake
 ---
 
-# Batch telemetry model: three grains, Spark identity, one raw table
+# Batch telemetry model: one raw table, derived tables, Spark identity
 
 Case: `cases/unified-data-observability-and-lineage.md`
 
@@ -38,12 +38,14 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 
 - **One raw table, one shared writer:** `process_telemetry`, one row per input object consumed by one batch: a file; a message topic/partition range; an upstream Delta batch within the declared source/plant scope.
 - **Facts:** `process_metrics_per_batch`, exactly one flat row per (`query_id`, `batch_id`), scalar `source_type`, with ready-to-use means, bounds, coverage and completion ages built alongside mergeable sums/counts.
-- **Relationships:** `process_batch_dependencies`, observed producer-batch → consumer-batch edges per consumed Delta table.
+- **Relationships:** `process_batch_dependencies`, observed producer-batch → consumer-batch edges per consumed Delta table. *(Dropped 2026-11-23: redundant; the edges are in raw Delta rows and the ancestry walk reads raw directly.)*
+- **End-to-end freshness (2026-11-17):** `process_end_to_end_freshness`, one row per (target batch, origin batch), built by walking ancestry in raw. Which time values it carries is still open (case log, 2026-11-18).
+- **Ledger (2026-10-29, 2026-11-18):** for files, `process_telemetry` is also the processed-files ledger. Jobs check it as a guarantee that a file is done; deleting a file's row makes the job reprocess it, and metrics are not corrected retrospectively. Legacy `processed_files` rows are imported once (null `query_id`/`batch_id`, `job_id` and `job_name` filled, a marker column) so the ledger stays continuous.
 - **Hourly trends (2026-10-25):** `process_metrics_per_hour`, one row per (`job_id`, `source_id`, processing hour of `batch_end_ts` in UTC), built directly from raw: volume, sums/counts, merged message histograms, exact file size/age percentiles and threshold counts, and processing-time percentiles over the hour's distinct batches. Serves every time-window monitoring purpose.
 - **Layout (2026-10-25):** raw clustered on (`job_name`, `batch_date`), `process_metrics_per_hour` on (`job_name`, `process_hour`); no partitioning. `job_name` leads because the readers, people and reports, know jobs by name. A renamed job splits name-filtered history; trend continuity uses `job_id`.
 - **Naming (2026-10-29):** raw `process_telemetry`, per-batch `process_metrics_per_batch`, hourly `process_metrics_per_hour`, edges `process_batch_dependencies` (formerly `batch_telemetry`, `batch_facts`, `hourly_facts`, `batch_dependencies`). `process_` is a namespace prefix only; the grain is in the suffix. Hourly columns (2026-10-30): key `process_hour`, the UTC hour containing `batch_end_ts` (processing time, not event time); date `batch_date`, as in raw.
-- **`process_metrics_per_batch` and `process_metrics_per_hour` are persisted Delta tables (2026-10-25)**; other derived objects (daily rollups, daily file percentiles from raw) start as views and are materialized only when measured cost or retained history requires it.
-- **Build (2026-10-29):** one Scala aggregation function, run by a scheduled `availableNow` stream over `process_telemetry`; each micro-batch supplies the changed batch keys and hours, outputs are recomputed from raw and merged on each table's keys. The aggregation job reports an empty dataset to the Core wrapper.
+- **`process_metrics_per_batch` and `process_metrics_per_hour` are persisted Delta tables (2026-10-25)**; other derived objects (daily rollups, daily file percentiles from raw) start as views and are materialized only when measured cost or retained history requires it. *(As of 2026-11-23 no views exist.)*
+- **Build (2026-10-29):** one Scala aggregation function, run by a scheduled `availableNow` stream over `process_telemetry`; each micro-batch supplies the changed batch keys and hours, outputs are recomputed from raw and merged on each table's keys. The aggregation job reports an empty dataset to the Core wrapper. *(2026-11-20: one scheduled monitoring job runs the batch, hourly and end-to-end tasks in parallel, then a scoring task; see `cases/monitoring-and-alerting-on-unified-telemetry.md`.)*
 - **Identity:** (`query_id`, `batch_id`) from the SparkContext local property `sql.streaming.queryId` read on the batch thread; `job_id` for continuity; run ids per attempt; job/task names as labels only.
 - **Stamp on write, record on read:** producers propagate their query/batch identity in output data; consumers record the upstream keys they read.
 - **Telemetry idempotency only:** telemetry appends use `txnAppId` = query id, `txnVersion` = batch id. Module data-write transaction ids are not changed in this migration.
