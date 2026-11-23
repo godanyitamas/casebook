@@ -9,7 +9,7 @@ topics:
   - delta-lake
 ---
 
-# Batch telemetry model: three grains, Spark identity, one raw table
+# Batch telemetry model: four grains, Spark identity, one raw table
 
 Case: `cases/unified-data-observability-and-lineage.md`
 
@@ -39,6 +39,7 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - **One raw table, one shared writer:** `process_telemetry`, one row per input object consumed by one batch: a file; a message topic/partition range; an upstream Delta batch within the declared source/plant scope.
 - **Facts:** `process_metrics_per_batch`, exactly one flat row per (`query_id`, `batch_id`), scalar `source_type`, with ready-to-use means, bounds, coverage and completion ages built alongside mergeable sums/counts.
 - **Relationships:** `process_batch_dependencies`, observed producer-batch → consumer-batch edges per consumed Delta table.
+- **Ledger (2026-10-29, 2026-11-18):** for files, `process_telemetry` is also the processed-files ledger. Jobs check it as a guarantee that a file is done; deleting a file's row makes the job reprocess it, and metrics are not corrected retrospectively. Legacy `processed_files` rows are imported once (null `query_id`/`batch_id`, `job_id` and `job_name` filled, a marker column) so the ledger stays continuous.
 - **Hourly trends (2026-10-25):** `process_metrics_per_hour`, one row per (`job_id`, `source_id`, processing hour of `batch_end_ts` in UTC), built directly from raw: volume, sums/counts, merged message histograms, exact file size/age percentiles and threshold counts, and processing-time percentiles over the hour's distinct batches. Serves every time-window monitoring purpose.
 - **Layout (2026-10-25):** raw clustered on (`job_name`, `batch_date`), `process_metrics_per_hour` on (`job_name`, `process_hour`); no partitioning. `job_name` leads because the readers, people and reports, know jobs by name. A renamed job splits name-filtered history; trend continuity uses `job_id`.
 - **Naming (2026-10-29):** raw `process_telemetry`, per-batch `process_metrics_per_batch`, hourly `process_metrics_per_hour`, edges `process_batch_dependencies` (formerly `batch_telemetry`, `batch_facts`, `hourly_facts`, `batch_dependencies`). `process_` is a namespace prefix only; the grain is in the suffix. Hourly columns (2026-10-30): key `process_hour`, the UTC hour containing `batch_end_ts` (processing time, not event time); date `batch_date`, as in raw.
