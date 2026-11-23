@@ -25,6 +25,8 @@ Layout and access pattern form a contract. The layout is designed for the domina
 - **`cases/append-only-cdc-aggregation-pruning.md`:** the upstream partitions were already suitable, but join conditions alone did not make the downstream job benefit. An explicit predicate built from the batch's partition values did, confirmed as pruning in the Spark UI.
 - **`cases/unified-data-observability-and-lineage.md`:** partitioning by job and date was rejected (tiny, skewed partitions). Liquid clustering leads with `job_name` because people and reports know jobs by name, and `process_metrics_per_hour` is persisted because monitoring reads hourly.
 
+Terminology: a **table partition** is a directory in the layout (`ingestion_date`, business columns); a **Spark partition** is one task's input. They meet only through file sizes: Spark packs the files of all selected table partitions together, so one task can read several dates, and a large splittable file can span several tasks (`labs/spark-job-anatomy/`).
+
 ## Making the layout known
 
 Readers can only honour the contract if they know it:
