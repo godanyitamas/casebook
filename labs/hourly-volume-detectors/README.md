@@ -8,7 +8,7 @@ topics:
 
 # Hourly volume detectors: robust z, EWMA, CUSUM (synthetic)
 
-Supports `cases/unified-data-observability-and-lineage.md`, open question: which baseline defines a trend, and which volume deviation is meaningful? Built by an AI agent on request; the scenario and parameters are the agent's choices, not decisions.
+Supports `cases/monitoring-and-alerting-on-unified-telemetry.md` (split from `cases/unified-data-observability-and-lineage.md` on 2026-11-23), open question: which baseline defines a trend, and which volume deviation is meaningful? Built by an AI agent on request; the scenario and parameters are the agent's choices, not decisions.
 
 ![Detector bench: robust z, EWMA and CUSUM rows of hourly pins](detectors.png)
 
@@ -44,7 +44,7 @@ Hours to the first false alarm on clean, independent normal noise (z / EWMA / CU
 
 In the scenario with 2 weeks, the pooled scale gives 3 EWMA alarms and 1 CUSUM signal in the 65 quiet hours; with per-hour MADs, 16 / 29 / 14. With little history, an early alarm in the dip cannot be told apart from noise.
 
-**Real implementation (2026-11-20):** the scoring notebook uses a 28-day rolling median/MAD of `log1p` observations, with EWMA exploratory (case log, 2026-11-20). Once production history exists, these results are hypotheses to test on `process_metrics_per_hour`: pooled versus per-slot scale, and whether a sustained small shift is missed without EWMA or CUSUM.
+**Real implementation (2026-11-20):** the scoring notebook uses a 28-day rolling median/MAD of `log1p` observations, with EWMA exploratory (monitoring case log, 2026-11-20). Once production history exists, these results are hypotheses to test on `process_metrics_per_hour`: pooled versus per-slot scale, and whether a sustained small shift is missed without EWMA or CUSUM.
 
 ## What this does not show
 

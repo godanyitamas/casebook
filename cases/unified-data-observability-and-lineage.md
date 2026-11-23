@@ -16,15 +16,15 @@ topics:
 
 # Designing unified processing telemetry across files, message streams, and Delta
 
-> **Handoff (2026-11-18)**
+> **Handoff (2026-11-23)**
 >
 > - **Settled:** four grains (raw `process_telemetry`, flat `process_metrics_per_batch`, `process_metrics_per_hour` from raw, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
-> - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); a draft statistics notebook (MAD, EWMA, basic freshness) on a few jobs. Since 2026-11-20: a scheduled monitoring job runs both metrics tasks and end-to-end freshness before a scoring notebook; a separate alerting notebook evaluates rules.
+> - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); since 2026-11-20 both run as tasks of one scheduled monitoring job.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
-> - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance, false-alarm rate of baseline rules (H17).
-> - **Scope revised (2026-11-17):** engineering owns default per-job rules and the statistical validity parameters; the business side sets exact thresholds for critical sources in a lookup table, which takes precedence. Monitored families: volume per time window and message age.
-> - **Release update (2026-11-20):** first production release planned for 25 November, bundled with the 18 LTS runtime migration; weekly releases follow. Monitoring collects history, but the deployed alerting job will not run and no rules will be active. Legacy `processed_files` rows are planned for a one-time import as ledger evidence.
-> - **Next:** accumulate production history; demonstrate the monitoring to the business side; define rules together and evaluate them against shadow alerts and known examples before activation; clarify the two end-to-end values, quiet-topic handling and statistics staleness; investigate the slow population; H1 and replay tests.
+> - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance.
+> - **Monitoring, alerting and rollout:** moved to `cases/monitoring-and-alerting-on-unified-telemetry.md` (2026-11-23).
+> - **Release:** first production release on 25 November, bundled with the 18 LTS runtime migration. Legacy `processed_files` rows are planned for a one-time import as ledger evidence.
+> - **Next:** define and name the two end-to-end values; legacy import (`Datasource` → `job_id` mapping, cutoff, filtering in the streaming jobs); investigate the slow population; H1 and replay tests in production.
 
 ## Problem
 
@@ -105,6 +105,8 @@ Histogram bucket counts merge exactly only for compatible bounds/version, metric
 
 ## Investigation log
 
+> Moved on 2026-11-23 to `cases/monitoring-and-alerting-on-unified-telemetry.md`: the 2026-10-31 volume-detector entry, the monitoring parts of 2026-11-17 and 2026-11-18, and the 2026-11-20 and 2026-11-23 entries.
+
 ### 2026-10-19: populations, storage types, monitoring questions
 
 - **Observed:** a file builder repeated the batch file count on every file row, so sums overcounted. For `binaryFile`, one row is one file (`input_unit_row_count = 1`); parsed rows per file are a different population.
@@ -162,17 +164,13 @@ Details: `decisions/batch-telemetry-model.md`.
 - **Decided:** in `process_metrics_per_hour`, the hour key is `process_hour` (formerly `hour_start_ts`): the UTC hour that contains `batch_end_ts`. The grain is the hour; which instant assigns a batch to it is a rule, stated in the column comment rather than the name. The date column is `batch_date` (formerly `hour_date`), the same value and name as in raw. Clustering is on (`job_name`, `process_hour`), the columns readers filter and the merge matches on.
 - **Observed (local test):** the hour is truncated on epoch microseconds, so it is a UTC hour regardless of session time zone. Open: whether `batch_date` in the hourly build is also derived in UTC; `to_date` on a timestamp uses the session time zone.
 
-### 2026-10-31: volume detectors (synthetic lab)
-
-- **Lab (synthetic, agent-built, not evidence about the real tables):** `labs/hourly-volume-detectors/` compares robust z against the same hour on 7 previous weeks, EWMA and CUSUM on simulated hourly volume. Hypotheses to test on `process_metrics_per_hour`: per-hour 7-point MADs make the scale too noisy (a false alarm every 15–21 h on clean simulated data) while a pooled relative scale does not; robust z misses a sustained −8 % shift that EWMA and CUSUM catch within 6–8 h.
-
 ### 2026-10-31: aggregation re-read without union
 
 - **Decided (tried):** the aggregation jobs use the micro-batch only to find the changed keys; rows come from the re-read of `process_telemetry`, without union or `distinct`. The micro-batch's rows are already committed, so the re-read always contains them. Supersedes the "under consideration" note of 2026-10-29.
 - **Measured:** a duplicate-key check on raw found no duplicate rows (scope not recorded). Without `distinct`, a future duplicate would be counted twice, so the check remains the guard. It does not verify replay (H2/H3) unless the checked period included restarts or replays.
 - **Open:** whether the re-read skips files on the clustering columns (check the scan in the Spark UI); for `process_metrics_per_hour`, the keys must be the affected (`job_name`, `process_hour`) pairs, re-reading every raw row of those hours.
 
-### 2026-11-17: metrics jobs on QA, end-to-end freshness, statistics notebook
+### 2026-11-17: metrics jobs on QA, end-to-end freshness
 
 - **Deployed (QA):** the two aggregation jobs populate `process_metrics_per_batch` and `process_metrics_per_hour`; `availableNow` on a schedule, each run resuming from its checkpoint.
 - **Observed (QA):** a delete and an update on `process_telemetry` did not stop either stream (`skipChangeCommits`). Not checked: whether the affected batches and hours were recomputed afterwards.
@@ -188,68 +186,19 @@ Details: `decisions/batch-telemetry-model.md`.
     - **Agent note:** functional and modification timestamps can both be present; functional wins even when modification is earlier, so "minimum" holds within the chosen column.
   - Per-target monitoring needs an aggregate over the (target, origin) rows, presumably the oldest origin; converging paths must not count one origin twice.
   - Now minus latest record catches staleness only for jobs that have rows, and cannot tell stuck from no new input (see Freshness).
-- **Draft (QA, few jobs):** a notebook computing MAD, EWMA and basic freshness per job; notes to follow. The metrics tables, `process_end_to_end_freshness` and these statistics are meant as the base for monitoring jobs that fail and alert when thresholds are broken.
-- **Monitoring direction (my decisions, under construction):**
-  - About 200 jobs behave differently, so general rules apply to every job against its own historical baseline. A lookup table lets the business side set exact thresholds and rules for critical sources of their choice; a lookup row takes precedence over the general rule.
-  - How much history (days, batches, hours) makes a baseline statistically valid is an engineering parameter, guided by accuracy, not by the business.
-  - First release computes the statistics with flags (for example "insufficient history") that say whether a value should be used; no alerting on them yet.
-  - Production alerting starts with a few crude rules, such as "has this job produced something in the last 2 hours?", while production data accumulates and more jobs are connected.
-  - Shadow alerts: Databricks alerts sent only to my email address.
-  - Alerting job (planned): reads the persisted statistics, compares them with expectations, collects every breach and fails once with a summary. It also checks the statistics themselves: if the latest evaluation in the statistics table is older than allowed, that is a breach in the same summary, so a stalled statistics notebook cannot pass as healthy. The allowed age follows from the notebook's schedule (not yet set).
-- **Agent challenge (not verified):**
-  - History sufficiency depends on the baseline: same hour of week needs several weeks per slot, a pooled or rolling baseline needs hours. The synthetic lab already found 7 points per slot noisy. Measurable on real data: how much the baseline moves as history grows, and how often each rule fires on healthy data.
-  - Store the evidence behind a flag (point count, baseline window, reason codes such as `insufficient_history`, `partial_hour`, `recomputed_after_evaluation`), so the validity threshold can change without recomputation.
-  - The crude rule needs an expected cadence per job; daily or irregular jobs break a fixed 2 h window. "Produced" needs a definition: a completed batch, or non-zero input.
-  - The lookup table should be keyed on a stable identity (`job_name` vs `job_id`, R5), or a renamed job silently loses its thresholds.
-  - A failing monitoring job as the alert signal mixes four things: a breach and a crash in the monitoring code look the same; raising on the first breach skips the remaining checks; a green run can mean nothing was evaluated; platform retries re-run a breach. Alternative: write one row per check and target to a results table (value, threshold, flags, status, evaluation time), fail only on own errors, alert from the table (shadow alerts become SQL alerts on it), and check that evaluations are recent.
-    - **My answer:** the statistics notebook persists its results in a Delta table; a separate alerting job compares them with expectations. It collects every breach, raises one exception with a summary at the end, and the failure alert brings people to read it. Collecting before failing is what keeps one job's breach from hiding another's. An extra job only to crash is accepted; the statistics must be persisted anyway.
-    - **Agent note (not verified):** remaining gaps: the alerting job should also fail when the statistics are stale (last evaluation too old), otherwise a stalled notebook makes it compare old values and pass; disable retries on the alerting job; breaches exist only in run history unless also written to a table, which H17 needs for counting firings.
 
-### 2026-11-18: presentations, release plan, ledger import
+### 2026-11-18: ledger, legacy import and the two end-to-end values
 
-- **Presented:** to the client, the monitoring layout: current state (only file jobs report, several disconnected monitoring solutions, no connection to platform system tables, legacy reporting inconsistent and physically fragmented), how everything connects to `process_telemetry`, the metrics jobs, end-to-end freshness, and that the existing operational dashboards could be reworked on the new tables. Demo: end-to-end freshness tracing a Kafka pipeline from source to Gold. Again to the client with the project manager: what gets deployed, what it means for business and developers, rollout and rollback. At sprint review: a short overview of the release bundling the runtime migration with the monitoring rollout; new datasources and legacy migrations must target the new runtime and reporting afterwards; a migration guide promised later.
-- **Client questions (two lines):**
-  - Transition: how do downstream consumers move from `processed_files` to `process_telemetry`, and how is the history in `processed_files` kept?
-  - Kafka flows (the most visible): what can be seen after this release, what will be monitored; a request for a demo and examples.
+- **Client question** (the presentation and the rest of this entry are in `cases/monitoring-and-alerting-on-unified-telemetry.md`): how do downstream consumers move from `processed_files` to `process_telemetry`, and how is the history in `processed_files` kept?
 - **Answered / decided (transition):** dual reporting → data quality check → downstream consumers migrated one by one. Each consumer is investigated once every FILE upstream job reports to `process_telemetry`; known consumers come from platform lineage. The rework of the operational dashboards is a separate thread with their maintainer and the client's internal meeting.
 - **Clarified: the table is also a ledger.** `processed_files`, and now `process_telemetry`, records which files have been processed; some jobs check it as a guarantee that a file is done, and reprocessing deletes the rows. Lookups use the file path and sometimes a legacy, arbitrary `Datasource` column, which `job_id` is expected to replace.
 - **Decided (history):** legacy rows are imported into `process_telemetry` once, as evidence that the files were ingested: null `query_id`/`batch_id`, `job_id` and `job_name` filled, plus a marker column. A job being recreated or renamed (new `job_id`, empty ledger) is rare and an accepted risk; a sturdier key (for example `source_id` + `job_name`) can be investigated later.
-- **Release plan:** 24 November: a handful of jobs move to the new runtime and report to `process_telemetry`; the monitoring jobs are deployed; production alerting covers only time since the last `process_telemetry` record per job, while the statistics gather history. Weekly releases afterwards, building step by step; Kafka pipeline alerting is proposed for the next release, as the most important business item. A trends and alerting call with the client is planned for Friday.
-- **Planned:** a platform dashboard as the first stop for ad-hoc investigation of a job: metrics and trends joined with system tables (cost, cluster metrics), with releases (number and date, recorded manually) overlaid to look for correlations. Partly built; to be connected to the new metrics tables.
 - **Under consideration (not decided):** end-to-end freshness as two values: target `batch_end_ts` − origin batch start, and target `batch_end_ts` − earliest inferable source timestamp, so that a pipeline-speed expectation can be stated apart from source delay. Definition and naming open.
 - **Agent challenge (not verified):**
   - Origin batch start does not separate source from pipeline. The difference between the two values contains producer delay and transport, but also consumer backlog and trigger interval, which the pipeline owns. A rule on the first value can hold while Bronze falls behind; consumer backlog is one of the competing explanations for the slow population (see Evidence). A backlog signal (broker end offsets vs consumed offsets, parked) would split it.
   - Choose the metric for what it measures, not because the rule holds more easily; observed slowness must not relax the expectation (Freshness).
-  - End-to-end freshness is visible only for pipelines whose every hop reports, producers before consumers. Whether the first jobs form a complete Kafka chain decides what the Kafka stakeholders see after the first release.
   - The demo number is a worst case (minimum message timestamp, producer-supplied CreateTime), not typical age; "fresh enough" needs a threshold the business side has not set.
-  - Quiet topics: a `processingTime` query without new data runs no micro-batch (stateless queries; to verify), so no telemetry row is written and "time since last record" fires. Per-job thresholds or known quiet hours are needed.
-  - Kafka alerting one week after the first release has too little history for baseline rules; it must be threshold-based (needs the business threshold) or crude.
-  - The release overlay cannot separate the runtime migration from the telemetry overhead (H4) in a bundled release. System tables do give a pre-release baseline for cost and run duration. A small release table is sturdier than values typed into the dashboard.
   - Legacy import: the aggregation streams and the end-to-end freshness module will pick up the imported rows (filter the marker or accept partial historical metrics, decided beforehand); import only rows from before each job's switch, or deduplicate by file, to avoid two ledger rows per file during dual reporting; `Datasource` → `job_id` needs a mapping, and values shared by several jobs cannot be assigned.
-
-### 2026-11-20: scoring, alert rules and revised release
-
-- **Implemented:** a scheduled monitoring job runs the batch metrics, hourly metrics and end-to-end freshness tasks before the scoring task. The scoring notebook persists results for the evaluated hour.
-- **Scoring implementation:** a 28-day rolling baseline uses the median and MAD of log-transformed observations; sample count and history span determine a provisional baseline status. An exploratory EWMA is reconstructed over seven days. Hourly scoring covers input volume and file/message size measures; batch scoring covers processing duration. These choices and validity thresholds still need evaluation on production data.
-- **Alerting implementation:** a separate notebook matches generic and job- or source-type-specific rules, selects the most specific match, evaluates raw measurements or end-to-end source-to-target age, and collects findings before failing once. Score- or trend-based generic alerts are intended later; the current evaluator does not use modified z-scores or EWMA.
-- **Release revision:** the first production release is planned for **25 November**, bundled with the 18 LTS migration, followed by weekly releases. The monitoring job will collect history; the alerting job will be deployed but will not run, and no rules will be active. This supersedes the 24 November and initial crude-alert plan above.
-- **Validation direction:** accumulating production history makes evaluation possible; it does not by itself establish validity. I still need to demonstrate how the reworked monitoring behaves to the business side. We will define rules step by step and judge readiness for activation using both shadow-alert results and known examples, aiming to avoid unwanted false alarms.
-- **Open implementation questions (agent review, not verified in runtime):** an alert run with no matching observations can pass without checking whether expected jobs were evaluated or statistics are stale. A disabled specific rule suppresses a matching generic rule because specificity is selected first; confirm whether this is the intended exemption. The scoring notebook replays history for EWMA but persists only the target hour, so a later correction to an earlier hour does not automatically update its persisted score. Test these behaviors before activating rules.
-- **Freshness caution:** source-to-target and origin-start-to-target ages are separately maximized across origins in the alert notebook; the two maxima can describe different origins. Source timestamp meaning and lineage coverage remain open.
-- **My answers (2026-11-20, exploratory):**
-  - Kafka and Delta sources had only basic crash detection before, which also covers new jobs such as the monitoring job. The first release therefore changes nothing for them; rules the business side asks for are added after 25 November, knowing what the data shows by then.
-  - The first release shows the customer what the monitoring looks like and what it can do; rules are then inserted into the lookup table one at a time, using the weekly releases to adjust as the migration goes on.
-  - The log transform is `log1p`, so zero observations are defined.
-  - Rules are scoped by job or source type on any measure, not only end-to-end freshness. Source-to-target age is expected to be specific to a few jobs; origin-start-to-target age per source type. Examples: a tighter rule for Kafka Bronze jobs later; a generic activity rule for file jobs ("a row in `process_telemetry` in the past x hours").
-- **Agent note (not verified):** a generic origin-start-to-target rule cannot see Bronze falling behind (consumer backlog sits before origin start), so it should not be the only generic freshness check. File deliveries can be daily or irregular, so the generic activity window x likely depends on the source or job (expected cadence, see Open questions).
-
-### 2026-11-23: Kafka demo pair and full-pipeline proposal
-
-- **Briefed:** the team, in a written message.
-- **25 November release:** deliberately includes one Kafka Bronze job and its Silver consumer, one of the least critical Kafka flows, as the end-to-end freshness demo.
-- **Proposed to the customer for 1 December:** migrate Kafka jobs together with their full pipeline (Bronze, Silver, Gold), so end-to-end freshness is visible for whole flows.
-- **My reasoning:** any job can be rolled back at any time by restoring the previous jars and parameters, and it runs as before; release downtime and these risks are already communicated. I consider the rollout low risk.
-- **Agent note (not verified):** restoring jars restores code, not the state written on the new runtime. Check once on QA (run on 18 LTS, roll back, restart): whether the older runtime reads a streaming checkpoint written by the newer one; whether any table the job writes gained a newer Delta protocol or table feature that the older runtime cannot write. While a file job is rolled back it does not write `process_telemetry`, so the new ledger misses that window unless dual reporting and the import cover it.
 
 ---
 
@@ -356,25 +305,10 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Alert against expected cadence/deadline from a process dimension, evaluated at query time from expected processes left-joined to observations. Candidate 120/300 s bounds give exact late shares. Observed slowness must not relax the expectation.
 - Staleness alone cannot tell "stuck" from "no new input"; sharper: downstream stale **and** upstream has a newer batch than the latest one consumed (still fooled by zero-row writes).
 
-### Monitoring scope (2026-10-23)
+### Monitoring scope
 
-**User decisions:**
+Moved to `cases/monitoring-and-alerting-on-unified-telemetry.md` (2026-11-23). Facts-build proposal kept here:
 
-- **Responsibility split:** the customer's business side owns alert policy (thresholds, warning/critical, tolerated late shares). Engineering delivers metrics detailed enough to build valuable monitoring on, and establishes trends.
-- **Accepted measurements:** CreateTime as publication time; `batch_end_ts` (post-write) as availability time. The caveats stay: CreateTime is producer-supplied; batch end is a writer-side proxy for target availability.
-- **Expectation ballpark:** roughly 2–5 min from publication to parsed Bronze for Kafka MESSAGE jobs.
-- **Two metric families to trend:**
-  - **Volume per time window** (primary): `SUM(input_message_count)` per hour/day and source. Messages per batch stays a diagnostic only: it depends on trigger cadence and batch size, and a batch catching up on backlog looks like a volume spike although the source did not change. Growing batch sizes can indicate a consumer falling behind.
-  - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
-- **Granularity:** engineering stores hourly (`process_metrics_per_hour`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
-
-**Revision (2026-11-17):** engineering owns default per-job baseline rules and the parameters that decide whether a statistic is valid (history length, flags); the business side sets exact thresholds and rules for critical sources in a lookup table, which takes precedence over the defaults. Production alerting starts with crude rules. See the 2026-11-17 log entry. *(First release: no active rules; rules added one at a time afterwards, see 2026-11-20.)*
-
-**Agent proposals, not decided:**
-
-- *(Decided 2026-10-25: hourly base.)* Histograms and sums merge exactly at any window, so the facts support both granularities; an hourly base with daily rollups is a reasonable default. For a 2–5 min expectation, daily works as a trend, not for reacting. The deciding question for the business side: how fast must someone notice a problem?
-- Trend baselines should account for seasonality (shifts, production schedules): compare with the same hour on previous weeks rather than the previous hour.
-- Zero volume is invisible as rows (no input, no batch); detect it from the expected-process list left-joined to observations, as above.
 - **Fallback for the deferred `-1` filter:** if a batch's `message_min_ts` is implausibly old (e.g. before 2000), the facts build nulls its age metrics and flags it, so one invalid timestamp cannot corrupt means or histograms unnoticed.
 
 ### Lineage limits
@@ -457,7 +391,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 | H14 | Envelope invariants, uniqueness and population checks give one correct facts row per batch | 3, 6 | Open |
 | H15 | Version-1 histograms answer monitoring queries with acceptable error and overhead across days | 3 | One day measured; stability, performance open; tolerance follows from the business side's thresholds |
 | H16 | Event Hubs via Kafka endpoint reports its configured timestamp type | 3 | Open; now only relevant to onboarding checks |
-| H17 | General per-job baseline rules with validity flags give an acceptable false-alarm rate across ~200 jobs on real data | 8 | Open; shadow alerts planned |
+| H17 | *Moved to the monitoring case* | | |
 | H18 | End-to-end freshness rows resolve every origin; targets with unresolved references are rare and countable | 6 | Open; arrival-order gaps judged unlikely, not measured |
 
 **POC steps:** 0 acceptance queries and synthetic ground truth (two-query job, recent process reading old data); 1 identity; 2 idempotency and replay (telemetry only, no data-write migration); 3 stamps, populations, storage, histograms (second day, `-1`, size tail near 1 MB, overhead); 4 multi-source/multi-output; 5 failure and replay; 6 facts and ancestry (histogram merges, commit split, converging paths, unresolved references); 7 migration checks and legacy reconciliation; 8 evaluate and write up.
@@ -468,10 +402,9 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 
 **Freshness and expectations**
 
+*(Business thresholds, baselines and what support reads moved to the monitoring case, 2026-11-23.)*
+
 - Why do traceability events exceed the 2–5 min expectation? Proposed checks on Bronze for one day: compare start age with the interval between batch starts (consumer backlog); check whether CreateTime is non-monotonic in offset order within a partition (producer buffering/clock); compare consumed max offsets with broker end offsets where available.
-- To agree with the business side: how fast must a problem be noticed (sets hourly vs daily), which thresholds and late shares become warning/critical, and through which channel?
-- Which baseline defines a trend (same hour previous weeks, rolling window), and which volume deviation is meaningful?
-- Do expectations describe processing cadence or arrival cadence? What should a support engineer read from the morning email or a dashboard?
 
 **Histograms and timestamps**
 
@@ -489,27 +422,9 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 - What evidence identifies the exact downstream population when ancestry is insufficient?
 - How does the archiving job read the table? What does the legacy 65 GB consist of?
 
-**Monitoring and alerting (2026-11-17)**
-
-- How will score- and trend-based rules use baseline-validity flags, and how will missing or stale evaluations be detected before alerting is activated?
-- When facts for an earlier hour change, should persisted scores be recomputed, and how will that be detected?
-- Does a disabled specific rule intentionally exempt its scope from a generic rule?
-- Is the 28-day baseline pooled across hours, or per hour of day / hour of week? Pooling hides seasonality; per-slot baselines leave few points per slot (4 per hour-of-week slot in 28 days).
-- Are the sample count and history span persisted next to each score, or only the resulting baseline status?
-- How much history makes a baseline valid, per baseline type (same hour of week vs pooled or rolling)? Which flags and reason codes are stored?
-- Where does each job's expected cadence come from for the crude "produced something" rule (lookup table, inferred maximum gap, exclusion)? Does "produced" mean a completed batch or non-zero input?
-- What key does the threshold lookup table use, and does it survive job renames?
-- *(Answered 2026-11-17: statistics persisted to Delta; a separate alerting job collects all breaches and fails once with a summary.)* How is a breach signalled? *(Planned 2026-11-17: a staleness check on the latest statistics evaluation in the alerting job.)* What tells us the statistics are still being evaluated? Open: the allowed age.
-- What firing rate in shadow alerts is good enough to activate a rule?
-
-**Release and stakeholders (2026-11-18)**
+**End-to-end values and legacy import (2026-11-18)**
 
 - How are the two end-to-end values defined and named, and how is consumer backlog kept from being counted as source delay?
-- What freshness threshold does the business side set for critical Kafka flows?
-- *(Answered 2026-11-23: a Kafka Bronze + Silver demo pair on 25 November; full Kafka pipelines proposed for 1 December.)* Do the first jobs form a complete Kafka chain, so that end-to-end freshness is visible after the first release?
-- Does a rollback to the previous runtime work with state written on the new one (streaming checkpoints, Delta protocol), and does the ledger cover the rollback window?
-- How does the basic alert treat quiet topics that produce no micro-batches?
-- Where are releases recorded for the dashboard overlay (manual values vs a small table)?
 - Legacy import: `Datasource` → `job_id` mapping, cutoff per job, and whether the streaming jobs filter imported rows.
 
 **Files and platform**
@@ -567,6 +482,7 @@ Potential connections, not evidence that the problem is already solved:
 - `cases/streaming-file-parser-rework.md`: file size vs duration per batch would have surfaced large-file pressure earlier.
 - `cases/repartitioning-large-delta-table.md`: retention and lifecycle operations bound long-lived assumptions; job recreation during a workspace move would split `job_id` continuity.
 - `labs/spark-job-anatomy/`: Spark job IDs are not a stable identity (the same write was 1 or 2 jobs depending on AQE, after a schema-read job), which supports keying on `query_id` and `batch_id`.
+- `cases/monitoring-and-alerting-on-unified-telemetry.md`: monitoring and alerting built on these tables (baselines, rules, rollout); split from this case on 2026-11-23.
 - `decisions/batch-telemetry-model.md`, `decisions/message-histogram-contract-v1.md`.
 
 ## Reusable lesson (provisional)
