@@ -243,6 +243,14 @@ Details: `decisions/batch-telemetry-model.md`.
   - Rules are scoped by job or source type on any measure, not only end-to-end freshness. Source-to-target age is expected to be specific to a few jobs; origin-start-to-target age per source type. Examples: a tighter rule for Kafka Bronze jobs later; a generic activity rule for file jobs ("a row in `process_telemetry` in the past x hours").
 - **Agent note (not verified):** a generic origin-start-to-target rule cannot see Bronze falling behind (consumer backlog sits before origin start), so it should not be the only generic freshness check. File deliveries can be daily or irregular, so the generic activity window x likely depends on the source or job (expected cadence, see Open questions).
 
+### 2026-11-23: Kafka demo pair and full-pipeline proposal
+
+- **Briefed:** the team, in a written message.
+- **25 November release:** deliberately includes one Kafka Bronze job and its Silver consumer, one of the least critical Kafka flows, as the end-to-end freshness demo.
+- **Proposed to the customer for 1 December:** migrate Kafka jobs together with their full pipeline (Bronze, Silver, Gold), so end-to-end freshness is visible for whole flows.
+- **My reasoning:** any job can be rolled back at any time by restoring the previous jars and parameters, and it runs as before; release downtime and these risks are already communicated. I consider the rollout low risk.
+- **Agent note (not verified):** restoring jars restores code, not the state written on the new runtime. Check once on QA (run on 18 LTS, roll back, restart): whether the older runtime reads a streaming checkpoint written by the newer one; whether any table the job writes gained a newer Delta protocol or table feature that the older runtime cannot write. While a file job is rolled back it does not write `process_telemetry`, so the new ledger misses that window unless dual reporting and the import cover it.
+
 ---
 
 ## Evidence
@@ -498,7 +506,8 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 
 - How are the two end-to-end values defined and named, and how is consumer backlog kept from being counted as source delay?
 - What freshness threshold does the business side set for critical Kafka flows?
-- Do the first jobs form a complete Kafka chain, so that end-to-end freshness is visible after the first release?
+- *(Answered 2026-11-23: a Kafka Bronze + Silver demo pair on 25 November; full Kafka pipelines proposed for 1 December.)* Do the first jobs form a complete Kafka chain, so that end-to-end freshness is visible after the first release?
+- Does a rollback to the previous runtime work with state written on the new one (streaming checkpoints, Delta protocol), and does the ledger cover the rollback window?
 - How does the basic alert treat quiet topics that produce no micro-batches?
 - Where are releases recorded for the dashboard overlay (manual values vs a small table)?
 - Legacy import: `Datasource` → `job_id` mapping, cutoff per job, and whether the streaming jobs filter imported rows.
