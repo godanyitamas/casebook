@@ -18,7 +18,7 @@ topics:
 
 > **Handoff (2026-11-23)**
 >
-> - **Settled:** four grains (raw `process_telemetry`, flat `process_metrics_per_batch`, `process_metrics_per_hour` from raw, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
+> - **Settled:** raw `process_telemetry` plus three derived tables (`process_metrics_per_batch`, `process_metrics_per_hour`, `process_end_to_end_freshness`); `process_batch_dependencies` dropped and no views (2026-11-23, see Objects); Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
 > - **Running on QA (2026-11-17):** both aggregation jobs (`availableNow`, re-read from raw, `skipChangeCommits`); an end-to-end freshness module writing `process_end_to_end_freshness`, one row per (target batch, origin batch); since 2026-11-20 both run as tasks of one scheduled monitoring job.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), commit-split completeness (H12), lineage and end-to-end completeness (H7, H18), cross-day stability, performance.
@@ -248,6 +248,20 @@ Against the 2–5 min expectation, traceability events had a **median completion
 
 Stable decisions and their reasoning: `decisions/batch-telemetry-model.md` and `decisions/message-histogram-contract-v1.md`. Full column lists and SQL drafts live in the work codebase; this section keeps what the reasoning needs.
 
+### Objects (2026-11-23)
+
+| Object | Written by | One row per | Read by |
+|---|---|---|---|
+| `process_telemetry` | every job, through the Core writer | input object consumed by one batch, in the job's own unit: file, topic/partition range, upstream Delta batch | the three monitoring tasks; jobs checking whether a file is processed; the alerting job (`max()` per job as an activity check) |
+| `process_metrics_per_batch` | monitoring job, batch task | batch (`query_id`, `batch_id`) | scoring task, alerting job |
+| `process_metrics_per_hour` | monitoring job, hourly task | (`job_id`, `source_id`, `process_hour`) | scoring task, alerting job |
+| `process_end_to_end_freshness` | monitoring job, end-to-end task | (target batch, origin batch) | alerting job |
+| legacy `processed_files` | jobs during dual reporting | file | legacy consumers until migrated |
+
+- **Monitoring job:** the batch, hourly and end-to-end tasks run in parallel over `process_telemetry`; a scoring task runs after all three and writes `process_scores_and_trends`. Scores, the rules table and the alerting job: `cases/monitoring-and-alerting-on-unified-telemetry.md`.
+- **Not present:** views of any kind (no batch or hourly facts views, no daily rollups); `process_batch_dependencies`, dropped as redundant because the ancestry walk reads raw directly.
+- **Not yet recorded:** whether the hourly merge matches on all three key columns; why batch metrics carry no `source_id`; the key of `process_end_to_end_freshness` and whether it merges or appends; the key of imported legacy rows (`file_path` + `job_id` + marker, expected).
+
 ### Principles
 
 1. Capture now only what cannot be recovered later; derive the rest downstream.
@@ -294,7 +308,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
 - `process_metrics_per_hour`: one row per (`job_id`, `source_id`, `process_hour`), built from raw, persisted; `process_hour` = UTC hour containing `batch_end_ts`; clustered on (`job_name`, `process_hour`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
-- `process_batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
+- *(Dropped 2026-11-23: redundant, the ancestry walk reads raw directly.)* `process_batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
 

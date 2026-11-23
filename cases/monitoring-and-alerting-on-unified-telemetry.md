@@ -38,6 +38,25 @@ How do I turn unified telemetry from about 200 heterogeneous jobs into monitorin
 
 ---
 
+## Objects (2026-11-23)
+
+The telemetry tables are listed in the telemetry case (Design → Objects).
+
+| Object | Written by | One row per | Read by |
+|---|---|---|---|
+| `process_scores_and_trends` | monitoring job, scoring task (after the batch, hourly and end-to-end tasks) | job × metric at BATCH or HOUR grain, depending on the metric | alerting job |
+| `process_alert_rules` | by hand: engineering defaults, business overrides | rule | alerting job |
+
+- **`process_scores_and_trends`:** the z-score and EWMA results, with sample count, unit, time span, and flags saying whether a value is good enough to use.
+- **`process_alert_rules` (early version, schema recited from memory):** `rule_id`, grain (`hour`, `batch`, `lineage`), metric, threshold, unit, comments, time added.
+- **Alerting job:** separate from the monitoring job; deployed, not running yet. Reads the metrics tables, `process_end_to_end_freshness` and `process_scores_and_trends`, plus `process_telemetry` directly (`max()` of the last committed row per job, as an activity check), and compares them with `process_alert_rules`.
+- **Agent challenge (not verified):**
+  - The recited rules schema has no scope (job, source type) or enabled column, yet the alerting notebook selects the most specific rule and a disabled specific rule suppresses a generic one (2026-11-20). Either the columns exist and were not recited, or matching works differently; check the real schema. A comparison direction (above or below the threshold) is also not listed.
+  - The activity check over raw: without a date filter, `max()` per job scans history; with one, a job that has been silent longer than the window disappears instead of alerting. Starting from an expected job list avoids both.
+  - Scores at two grains in one table: the key must include the grain, or a batch row and an hour row for the same job and metric collide.
+
+---
+
 ## Monitoring scope (2026-10-23)
 
 **User decisions:**
