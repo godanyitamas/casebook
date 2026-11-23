@@ -29,12 +29,17 @@ How do I turn unified telemetry from about 200 heterogeneous jobs into monitorin
 
 ## What I currently think
 
-*(Assembled on 2026-11-23 from my statements in the log below; to be rewritten in my own words.)*
+*(Written 2026-11-23.)*
 
-- General rules apply to every job against its own historical baseline; the business side can set exact thresholds and rules for critical sources in a lookup table, and the most specific rule wins.
-- How much history makes a baseline valid is an engineering parameter, set for accuracy; thresholds for critical sources belong to the business side.
-- The first release is a showcase that collects history, with no active rules. Rules are then added one at a time, judged on shadow alerts and known examples, using the weekly releases to adjust.
-- Statistics are persisted; a separate alerting job collects every breach and fails once with a summary, so one breach cannot hide another, and people read the exception.
+Monitoring is trustworthy if it operates on clear and consistent values, gives insight that is useful and not misleading, fires alarms when needed and in general improves our clarity about our system.
+
+All the rules are set inside the rules table without exception. Since we have roughly 200 modules and even more jobs that behave differently, we can't expect rules to apply uniformly to them. This is why we can define the most basic one, such as job activity, to apply to everyone, but more and more specific rules are the key to being flexible enough to really bound our jobs correctly with well-designed rules.
+
+There should be a balance in who decides what. There are expectations defined by the business, where they have to lead in terms of what they want, and there are more technical parts, like how the trends are calculated and how much history is taken into account, which should be the engineer's task to maintain. The translation of a business requirement into the actual row inserted into the rules table should also be an engineer's task.
+
+QA data is in many ways different from production. We have Kafka and Delta tables plugging into telemetry that we did not have before, so the business requirements are not yet defined. We also don't have enough history to really rely on scores and trends, and some buffer time will give us a chance to see the data side by side with the jobs' behaviour, so we can judge whether we are measuring things correctly and emitting shadow alarms correctly.
+
+Where I am guessing: I'm not yet confident in scores and trends. I think it will take some time for them to be up and running and be used as an actual alert.
 
 ---
 
