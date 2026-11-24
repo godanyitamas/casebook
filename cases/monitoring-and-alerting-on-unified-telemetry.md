@@ -29,12 +29,17 @@ How do I turn unified telemetry from about 200 heterogeneous jobs into monitorin
 
 ## What I currently think
 
-*(Assembled on 2026-11-23 from my statements in the log below; to be rewritten in my own words.)*
+*(Written 2026-11-23.)*
 
-- General rules apply to every job against its own historical baseline; the business side can set exact thresholds and rules for critical sources in a lookup table, and the most specific rule wins.
-- How much history makes a baseline valid is an engineering parameter, set for accuracy; thresholds for critical sources belong to the business side.
-- The first release is a showcase that collects history, with no active rules. Rules are then added one at a time, judged on shadow alerts and known examples, using the weekly releases to adjust.
-- Statistics are persisted; a separate alerting job collects every breach and fails once with a summary, so one breach cannot hide another, and people read the exception.
+Monitoring is trustworthy if it operates on clear and consistent values, gives insight that is useful and not misleading, fires alarms when needed and in general improves our clarity about our system.
+
+All the rules are set inside the rules table without exception. Since we have roughly 200 modules and even more jobs that behave differently, we can't expect rules to apply uniformly to them. This is why we can define the most basic one, such as job activity, to apply to everyone, but more and more specific rules are the key to being flexible enough to really bound our jobs correctly with well-designed rules.
+
+There should be a balance in who decides what. There are expectations defined by the business, where they have to lead in terms of what they want, and there are more technical parts, like how the trends are calculated and how much history is taken into account, which should be the engineer's task to maintain. The translation of a business requirement into the actual row inserted into the rules table should also be an engineer's task.
+
+QA data is in many ways different from production. We have Kafka and Delta tables plugging into telemetry that we did not have before, so the business requirements are not yet defined. We also don't have enough history to really rely on scores and trends, and some buffer time will give us a chance to see the data side by side with the jobs' behaviour, so we can judge whether we are measuring things correctly and emitting shadow alarms correctly.
+
+Where I am guessing: I'm not yet confident in scores and trends. I think it will take some time for them to be up and running and be used as an actual alert.
 
 ---
 
@@ -51,7 +56,7 @@ The telemetry tables are listed in the telemetry case (Design → Objects).
 - **`process_alert_rules` (early version, schema recited from memory):** `rule_id`, grain (`hour`, `batch`, `lineage`), metric, threshold, unit, comments, time added.
 - **Alerting job:** separate from the monitoring job; deployed, not running yet. Reads the metrics tables, `process_end_to_end_freshness` and `process_scores_and_trends`, plus `process_telemetry` directly (`max()` of the last committed row per job, as an activity check), and compares them with `process_alert_rules`.
 - **Agent challenge (not verified):**
-  - The recited rules schema has no scope (job, source type) or enabled column, yet the alerting notebook selects the most specific rule and a disabled specific rule suppresses a generic one (2026-11-20). Either the columns exist and were not recited, or matching works differently; check the real schema. A comparison direction (above or below the threshold) is also not listed.
+  - The recited rules schema has no scope (job, source type) or enabled column, yet the alerting notebook selects the most specific rule and a disabled specific rule suppresses a generic one (2026-11-20). Either the columns exist and were not recited, or matching works differently; check the real schema. A comparison direction (above or below the threshold) is also not listed. The recited grains (`hour`, `batch`, `lineage`) have no place for the activity rule, which reads raw directly; if all rules live in the table, it needs one (agent note, 2026-11-24).
   - The activity check over raw: without a date filter, `max()` per job scans history; with one, a job that has been silent longer than the window disappears instead of alerting. Starting from an expected job list avoids both.
   - Scores at two grains in one table: the key must include the grain, or a batch row and an hour row for the same job and metric collide.
 
@@ -70,6 +75,8 @@ The telemetry tables are listed in the telemetry case (Design → Objects).
 - **Granularity:** engineering stores hourly (`process_metrics_per_hour`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
 
 **Revision (2026-11-17):** engineering owns default per-job baseline rules and the parameters that decide whether a statistic is valid (history length, flags); the business side sets exact thresholds and rules for critical sources in a lookup table, which takes precedence over the defaults. Production alerting starts with crude rules. See the 2026-11-17 log entry. *(First release: no active rules; rules added one at a time afterwards, see 2026-11-20.)*
+
+**Revision (2026-11-24):** the business side states expectations and leads on what it wants; engineering translates each requirement into the row inserted into `process_alert_rules`, and maintains how trends are calculated and how much history counts. All rules, including the generic activity rule, live in the rules table (What I currently think).
 
 **Agent proposals, not decided:**
 
@@ -151,6 +158,7 @@ Numbering continues from the telemetry case.
 | # | Hypothesis | Status |
 |---|---|---|
 | H17 | General per-job baseline rules with validity flags give an acceptable false-alarm rate across ~200 jobs on real data | Open; shadow alerts planned |
+| H19 | Rules fire on real problems: known examples (past incidents or deliberately induced failures) are caught, not only false alarms avoided | Open; known examples not yet listed |
 
 ---
 
@@ -188,6 +196,7 @@ Not yet.
 - What key does the threshold lookup table use, and does it survive job renames?
 - *(Answered 2026-11-17: statistics persisted to Delta; a separate alerting job collects all breaches and fails once with a summary.)* How is a breach signalled? *(Planned 2026-11-17: a staleness check on the latest statistics evaluation in the alerting job.)* What tells us the statistics are still being evaluated? Open: the allowed age.
 - What firing rate in shadow alerts is good enough to activate a rule?
+- Which known examples (past incidents, induced failures on QA) should each rule be checked against before activation (H19)?
 
 **Release and stakeholders (2026-11-18)**
 
