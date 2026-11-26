@@ -236,6 +236,10 @@ All histogram totals matched their counts; no tested percentile fell in an open 
 
 Against the 2–5 min expectation, traceability events had a **median completion age of about 189 s and 35.9% of messages ≥300 s**; the smaller event population's p99 was about 611 s. Most of the age was already present at batch start, so slow parsing is not the main contributor. Competing explanations: consumer backlog, producer buffering or clock skew (CreateTime is producer-supplied), transport, scheduling. Not investigated yet; proposed discriminating checks in Open questions.
 
+### Production (2026-11-25, first release)
+
+- **Observed (my report):** a handful of migrated jobs wrote to `process_telemetry` in production on 18 LTS; the monitoring job built the batch and hourly metrics and end-to-end freshness from it. A Kafka Bronze → Silver pair produced end-to-end rows. Not yet reconciled against raw; H1, H2/H3 and H12 not yet exercised. Details: `cases/monitoring-and-alerting-on-unified-telemetry.md`.
+
 ### Local implementation evidence and its boundary
 
 - **Core (local, uncommitted):** constants, schema and writer compile; seven focused tests passed (published age vector, size formula, version, increasing bounds, nullable schema compatibility).
