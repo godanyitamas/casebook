@@ -149,6 +149,16 @@ The telemetry tables are listed in the telemetry case (Design → Objects).
 - **My reasoning:** any job can be rolled back at any time by restoring the previous jars and parameters, and it runs as before; release downtime and these risks are already communicated. I consider the rollout low risk.
 - **Agent note (not verified):** restoring jars restores code, not the state written on the new runtime. Check once on QA (run on 18 LTS, roll back, restart): whether the older runtime reads a streaming checkpoint written by the newer one; whether any table the job writes gained a newer Delta protocol or table feature that the older runtime cannot write. While a file job is rolled back it does not write `process_telemetry`, so the new ledger misses that window unless dual reporting and the import cover it.
 
+
+### 2026-11-25: first production release
+
+- **Observed (my report, day after release):** the migrated jobs ran on 18 LTS with migrated code, no issues so far. They wrote to `process_telemetry`, and the monitoring job produced the metrics and scores. No alerting rules active, as planned; no rollback needed or tested. Nothing unexpected.
+- **Observed: the Kafka demo pair.** `process_end_to_end_freshness` shows Bronze → Silver rows and, in my view, calculates correctly, but the Silver job runs about once a day, so the value mostly reflects the consumer's schedule rather than pipeline speed. Not a relevant demo of freshness.
+- **Agent note (not verified):**
+  - "Produced properly" and "calculates correctly" are not yet checked against an independent reference; one reconciliation (batch or hourly metrics against raw for one job and hour; one end-to-end row against the batch timestamps by hand) would make them evidence.
+  - The daily Silver job is a concrete case for two open points: end-to-end age for a scheduled consumer is dominated by its schedule, so a freshness expectation has to state the consumer's cadence; and a generic activity window cannot fit both always-on Bronze and daily Silver.
+  - One day on the new runtime; the rollback-state question (checkpoints, Delta protocol) remains untested.
+
 ---
 
 ## Hypotheses
